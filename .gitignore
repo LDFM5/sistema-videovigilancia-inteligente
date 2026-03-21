@@ -158,3 +158,32 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# =========================
+# PROYECTO VIDEOVIGILANCIA
+# =========================
+
+# Evidencias de video
+evidences/
+
+# Modelos entrenados (pesados)
+models/*.pt
+
+# Dataset local
+Training datasets/
+datasets/
+
+# Archivos grandes de entrenamiento
+*.mp4
+*.avi
+*.mov
+
+# Archivos temporales
+*.tmp
+
+# Archivos de Drive descargados
+drive/
+
+# Tokens o claves sensibles
+config_local.py
+secrets.py
