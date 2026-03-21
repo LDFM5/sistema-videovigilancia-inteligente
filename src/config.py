@@ -80,5 +80,8 @@ COLOR_ALERT = (0, 0, 255)
 # TELEGRAM
 # =========================
 
-TELEGRAM_TOKEN = "8560474015:AAE7wU-1n-y3Z2gl5LmyKEy-IdFzlTDPPOA"
-TELEGRAM_CHAT_ID = "7179295943"
+try:
+    from config_local import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+except:
+    TELEGRAM_TOKEN = None
+    TELEGRAM_CHAT_ID = None
