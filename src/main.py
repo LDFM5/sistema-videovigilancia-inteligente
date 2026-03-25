@@ -18,12 +18,15 @@ sino que conecta los módulos especializados del sistema.
 """
 
 import cv2
+# Importa las nuevas variables (Quita RECORD_DURATION)
 from config import (
     CONF_WEAPON,
     WINDOW_SECONDS,
     ACTIVATION_THRESHOLD,
-    RECORD_DURATION,
+    PRE_BUFFER_SECONDS,
+    POST_BUFFER_SECONDS
 )
+
 from cameras import initialize_cameras, read_frames
 from detection import load_weapon_model, detect_weapons
 from temporal_logic import initialize_windows, update_window
@@ -55,9 +58,10 @@ def main():
     alert_state = {cam_name: False for cam_name in cameras}
 
     # =========================
-    # Estado de grabación
+    # Estado de grabación (Actualizado)
     # =========================
-    recording_state = initialize_recording_state(cameras)
+    # Ahora pasamos los fps de las cámaras y el tiempo de pre-buffer
+    recording_state = initialize_recording_state(cameras, camera_fps, PRE_BUFFER_SECONDS)
 
     print("▶ Sistema iniciado. Presiona 'q' para salir.")
 
@@ -88,18 +92,20 @@ def main():
 
 
             # -------- Activar alerta --------
-            if alert_triggered:
+            # Comprobamos si no estábamos ya grabando este mismo evento
+            if alert_triggered and not recording_state[cam_name]["recording"]:
                 send_alert(cam_name)
 
-            # -------- Grabación --------
+            # -------- Grabación (Actualizado) --------
             handle_recording(
                 cam_name,
                 frame,
                 camera_resolutions,
                 camera_fps,
                 recording_state,
-                RECORD_DURATION,
-                alert_triggered
+                POST_BUFFER_SECONDS, # Pasamos el tiempo de post-buffer
+                alert_triggered,
+                weapon_in_frame
             )
 
             cv2.imshow(f"Camera: {cam_name}", frame)

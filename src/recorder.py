@@ -16,27 +16,30 @@ como evidencia sin necesidad de grabación continua.
 import os
 import time
 import cv2
+from collections import deque
 from config import EVIDENCE_DIR
-
 
 # =========================
 # INICIALIZAR ESTADO
 # =========================
 
-def initialize_recording_state(cameras):
+def initialize_recording_state(cameras, camera_fps, pre_buffer_seconds):
     """
-    Crea estructura de estado por cámara.
+    Crea la estructura de estado por cámara, incluyendo el pre-buffer circular.
     """
-
-    return {
-        cam_name: {
+    state = {}
+    for cam_name in cameras:
+        # Calcular cuántos frames caben en el tiempo de pre-buffer
+        fps = camera_fps.get(cam_name, 30)
+        buffer_size = int(fps * pre_buffer_seconds)
+        
+        state[cam_name] = {
             "recording": False,
-            "start_time": None,
-            "writer": None
+            "writer": None,
+            "frame_buffer": deque(maxlen=buffer_size), # Cola circular para el pre-buffer
+            "post_buffer_start_time": None             # Temporizador para el post-buffer
         }
-        for cam_name in cameras
-    }
-
+    return state
 
 # =========================
 # MANEJO DE GRABACIÓN
@@ -48,64 +51,67 @@ def handle_recording(
     camera_resolutions,
     camera_fps,
     recording_state,
-    record_duration,
-    alert_triggered
+    post_buffer_seconds,
+    alert_triggered,
+    weapon_in_frame  # <--- NUEVO PARÁMETRO
 ):
     """
-    Controla la grabación de clips por cámara.
+    Controla la grabación dinámica con pre-buffer y post-buffer preciso.
     """
-
     state = recording_state[cam_name]
+    w, h = camera_resolutions[cam_name]
+    frame_resized = cv2.resize(frame, (w, h))
 
     # =========================
-    # ACTIVAR GRABACIÓN
+    # ESTADO 1: NO ESTAMOS GRABANDO
     # =========================
-    if alert_triggered and not state["recording"]:
+    if not state["recording"]:
+        state["frame_buffer"].append(frame_resized)
 
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = os.path.join(
-            EVIDENCE_DIR,
-            f"{cam_name}_{timestamp}.mp4"
-        )
+        if alert_triggered:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = os.path.join(EVIDENCE_DIR, f"{cam_name}_{timestamp}.mp4")
+            
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            fps = camera_fps[cam_name]
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(filename, fourcc, fps, (w, h))
 
-        w, h = camera_resolutions[cam_name]
-        fps = camera_fps[cam_name]
+            if not writer.isOpened():
+                print(f"❌ Error creando archivo para {cam_name}")
+                return
 
-        writer = cv2.VideoWriter(
-            filename,
-            fourcc,
-            fps,
-            (w, h)
-        )
+            print(f"🎥 Alerta! Iniciando grabación ({cam_name}) - Volcando pre-buffer...")
 
-        if not writer.isOpened():
-            print(f"❌ Error creando archivo para {cam_name}")
-            return
+            state["recording"] = True
+            state["writer"] = writer
+            state["post_buffer_start_time"] = None
 
-        print(f"🎥 Grabando evidencia ({cam_name})")
-
-        state["recording"] = True
-        state["start_time"] = time.time()
-        state["writer"] = writer
+            for b_frame in state["frame_buffer"]:
+                writer.write(b_frame)
+            state["frame_buffer"].clear()
 
     # =========================
-    # ESCRIBIR FRAME
+    # ESTADO 2: ESTAMOS GRABANDO EL EVENTO
     # =========================
-    if state["recording"]:
+    else:
+        state["writer"].write(frame_resized)
 
-        w, h = camera_resolutions[cam_name]
-        frame_to_write = cv2.resize(frame, (w, h))
-
-        state["writer"].write(frame_to_write)
-
-        elapsed = time.time() - state["start_time"]
-
-        if elapsed >= record_duration:
-            print(f"✅ Clip guardado ({cam_name})")
-
-            state["writer"].release()
-            state["writer"] = None
-            state["recording"] = False
-            state["start_time"] = None
+        # Usamos la detección directa de YOLO, NO la alerta temporal
+        if weapon_in_frame:
+            # Mientras el arma esté en el frame actual, el post-buffer NO avanza
+            state["post_buffer_start_time"] = None
+        else:
+            # El arma NO está en este frame exacto. Iniciamos o continuamos el conteo
+            if state["post_buffer_start_time"] is None:
+                state["post_buffer_start_time"] = time.time()
+            else:
+                elapsed = time.time() - state["post_buffer_start_time"]
+                
+                if elapsed >= post_buffer_seconds:
+                    print(f"✅ Evento finalizado. Clip guardado exitosamente ({cam_name})")
+                    
+                    state["writer"].release()
+                    state["writer"] = None
+                    state["recording"] = False
+                    state["post_buffer_start_time"] = None

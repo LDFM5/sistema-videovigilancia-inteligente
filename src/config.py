@@ -55,7 +55,8 @@ ACTIVATION_THRESHOLD = 25     # Detecciones necesarias para activar alerta
 # GRABACIÓN
 # =========================
 
-RECORD_DURATION = 5  # Duración del clip en segundos
+PRE_BUFFER_SECONDS = 10    # Segundos guardados ANTES de que se detecte el arma
+POST_BUFFER_SECONDS = 15   # Segundos de grabación DESPUÉS de que el arma desaparece
 
 
 # =========================

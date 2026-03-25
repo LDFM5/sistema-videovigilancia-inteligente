@@ -42,9 +42,17 @@ def initialize_cameras():
             print(f"❌ No se pudo abrir la cámara: {cam_name}")
             continue
 
+        # ==================================================
+        # NUEVO: Forzar resolución panorámica (Alta calidad)
+        # ==================================================
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 10000)   # Ancho deseado
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 10000)   # Alto deseado
+        # (Si tu cámara soporta 1080p, puedes intentar 1920 y 1080)
+        # ==================================================
+
         cameras[cam_name] = cap
 
-        # Resolución
+        # Obtener la resolución REAL que la cámara aceptó darnos
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         camera_resolutions[cam_name] = (width, height)
