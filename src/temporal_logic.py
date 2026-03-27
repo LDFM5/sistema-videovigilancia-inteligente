@@ -45,7 +45,7 @@ def initialize_windows(camera_fps, window_seconds):
 
 def update_window(
     cam_name,
-    weapon_in_frame,
+    event_detected,      # <--- NUEVO: Nombre genérico
     detection_windows,
     activation_threshold,
     alert_state
@@ -59,7 +59,9 @@ def update_window(
     """
 
     window = detection_windows[cam_name]
-    window.append(1 if weapon_in_frame else 0)
+    
+    # Agregamos 1 si ocurrió el evento, 0 si no
+    window.append(1 if event_detected else 0)
 
     detections_sum = sum(window)
 

@@ -17,27 +17,26 @@ import os
 import time
 import cv2
 from collections import deque
-from config import EVIDENCE_DIR
+from config import EVIDENCE_DIR, RECORDING_FPS
 
 # =========================
 # INICIALIZAR ESTADO
 # =========================
 
-def initialize_recording_state(cameras, camera_fps, pre_buffer_seconds):
+def initialize_recording_state(cameras, pre_buffer_seconds):
     """
     Crea la estructura de estado por cámara, incluyendo el pre-buffer circular.
     """
     state = {}
     for cam_name in cameras:
-        # Calcular cuántos frames caben en el tiempo de pre-buffer
-        fps = camera_fps.get(cam_name, 30)
-        buffer_size = int(fps * pre_buffer_seconds)
+        # Usamos el FPS real en lugar del teórico de la cámara
+        buffer_size = int(RECORDING_FPS * pre_buffer_seconds)
         
         state[cam_name] = {
             "recording": False,
             "writer": None,
-            "frame_buffer": deque(maxlen=buffer_size), # Cola circular para el pre-buffer
-            "post_buffer_start_time": None             # Temporizador para el post-buffer
+            "frame_buffer": deque(maxlen=buffer_size),
+            "post_buffer_start_time": None
         }
     return state
 
@@ -73,7 +72,7 @@ def handle_recording(
             filename = os.path.join(EVIDENCE_DIR, f"{cam_name}_{timestamp}.mp4")
             
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            fps = camera_fps[cam_name]
+            fps = RECORDING_FPS
 
             writer = cv2.VideoWriter(filename, fourcc, fps, (w, h))
 

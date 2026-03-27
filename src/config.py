@@ -34,6 +34,7 @@ os.makedirs(EVIDENCE_DIR, exist_ok=True)
 
 # Ruta del modelo entrenado
 MODEL_PATH = os.path.join(MODELS_DIR, "best.pt")
+POSE_MODEL_PATH = os.path.join(MODELS_DIR, "yolov8n-pose.pt")
 
 
 # =========================
@@ -57,7 +58,7 @@ ACTIVATION_THRESHOLD = 25     # Detecciones necesarias para activar alerta
 
 PRE_BUFFER_SECONDS = 10    # Segundos guardados ANTES de que se detecte el arma
 POST_BUFFER_SECONDS = 15   # Segundos de grabación DESPUÉS de que el arma desaparece
-
+RECORDING_FPS = 20
 
 # =========================
 # CÁMARAS

@@ -59,11 +59,14 @@ def _send(message):
         pass
 
 
-def send_alert(cam_name):
+def send_alert(cam_name, mensaje_evento="Evento sospechoso detectado"):
+    """
+    Envía una alerta a Telegram con el nombre de la cámara y el tipo de evento.
+    """
     message = (
         "🚨 ALERTA DE SEGURIDAD\n\n"
         f"Cámara: {cam_name}\n"
-        "Evento: Arma detectada"
+        f"Evento: {mensaje_evento}"
     )
 
     thread = threading.Thread(target=_send, args=(message,))
