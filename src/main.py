@@ -27,6 +27,9 @@ from config import (
     CONF_WEAPON,
     WINDOW_SECONDS,
     ACTIVATION_THRESHOLD,
+    BEHAVIOR_WINDOW_SECONDS,
+    BEHAVIOR_ACTIVATION_THRESHOLD,
+    GOLPE_ACTIVATION_THRESHOLD,
     PRE_BUFFER_SECONDS,
     POST_BUFFER_SECONDS
 )
@@ -54,13 +57,17 @@ def main():
     cameras, camera_resolutions, camera_fps = initialize_cameras()
 
     # =========================
-    # Inicializar ventanas temporales
+    # Inicializar ventanas temporales (SEPARADAS)
     # =========================
-    detection_windows = initialize_windows(
-        camera_fps, WINDOW_SECONDS
-    )
+    windows_armas = initialize_windows(camera_fps, WINDOW_SECONDS)
+    windows_asalto = initialize_windows(camera_fps, BEHAVIOR_WINDOW_SECONDS)
+    windows_golpe = initialize_windows(camera_fps, BEHAVIOR_WINDOW_SECONDS) # Usa la misma duración que asalto o crea una nueva
 
-    alert_state = {cam_name: False for cam_name in cameras}
+    alert_state_armas = {cam_name: False for cam_name in cameras}
+    alert_state_asalto = {cam_name: False for cam_name in cameras}
+    alert_state_golpe = {cam_name: False for cam_name in cameras}
+
+    alertas_enviadas_evento = {cam_name: set() for cam_name in cameras}
 
     # =========================
     # Variables de rendimiento
@@ -91,42 +98,49 @@ def main():
                 CONF_WEAPON
             )
 
-            # -------- Detección de Postura y Comportamiento --------
-            comportamiento_sospechoso, frame = detect_pose(
-                pose_model,
-                frame,
-                0.5 
-            )
+            # -------- Detección de Postura --------
+            # Recibimos las variables separadas
+            asalto_detectado, golpe_detectado, frame = detect_pose(pose_model, frame, 0.5)
 
             # ==================================================
-            # UNIFICACIÓN DE AMENAZAS
+            # LÓGICA TEMPORAL 
             # ==================================================
-            amenaza_presente = weapon_in_frame or comportamiento_sospechoso
-
-            # -------- Lógica temporal --------
-            alert_triggered = update_window(
-                cam_name,
-                amenaza_presente, # <--- Pasamos la variable unificada
-                detection_windows,
-                ACTIVATION_THRESHOLD,
-                alert_state   
+            alerta_arma = update_window(cam_name, weapon_in_frame, windows_armas, ACTIVATION_THRESHOLD, alert_state_armas)
+            alerta_asalto = update_window(cam_name, asalto_detectado, windows_asalto, BEHAVIOR_ACTIVATION_THRESHOLD, alert_state_asalto)
+            
+            # Usamos el umbral casi inmediato para los golpes
+            alerta_golpe = update_window(
+                cam_name, 
+                golpe_detectado, 
+                windows_golpe, 
+                GOLPE_ACTIVATION_THRESHOLD, # <--- ¡Cambiamos esto!
+                alert_state_golpe
             )
 
-            # -------- Activar alerta de Telegram --------
-            if alert_triggered and not recording_state[cam_name]["recording"]:
-                
-                # 1. Determinar el texto exacto de la alerta basado en lo que estamos viendo
-                if weapon_in_frame and comportamiento_sospechoso:
-                    texto_alerta = "⚠️ Arma detectada Y persona con manos arriba (Posible asalto armado)"
-                elif weapon_in_frame:
-                    texto_alerta = "🔫 Arma de fuego/blanca detectada"
-                elif comportamiento_sospechoso:
-                    texto_alerta = "✋ Comportamiento sospechoso (Manos arriba / Posible asalto sin arma visible)"
-                else:
-                    texto_alerta = "Actividad sospechosa detectada"
+            alert_triggered = alerta_arma or alerta_asalto or alerta_golpe
+            amenaza_presente = weapon_in_frame or asalto_detectado or golpe_detectado
 
-                # 2. Enviar la alerta con el mensaje personalizado
-                send_alert(cam_name, texto_alerta)
+            # ==================================================
+            # GESTIÓN INTELIGENTE DE ALERTAS
+            # ==================================================
+            # 1. Si NO estamos grabando, significa que no hay evento activo. Limpiamos la memoria de alertas.
+            if not recording_state[cam_name]["recording"]:
+                alertas_enviadas_evento[cam_name].clear()
+
+            # 2. Evaluamos cada amenaza de forma independiente
+            # Si hay alerta, Y esa alerta NO se ha enviado en esta grabación, la enviamos y la registramos.
+            
+            if alerta_arma and "arma" not in alertas_enviadas_evento[cam_name]:
+                send_alert(cam_name, "🔫 Arma detectada en cámara")
+                alertas_enviadas_evento[cam_name].add("arma")
+
+            if alerta_asalto and "asalto" not in alertas_enviadas_evento[cam_name]:
+                send_alert(cam_name, "✋ Posible Asalto (Manos arriba prolongado)")
+                alertas_enviadas_evento[cam_name].add("asalto")
+
+            if alerta_golpe and "golpe" not in alertas_enviadas_evento[cam_name]:
+                send_alert(cam_name, "🥊 Agresión física / Movimiento brusco detectado")
+                alertas_enviadas_evento[cam_name].add("golpe")
 
             # ==========================================
             # MONITOREO DE RENDIMIENTO
@@ -187,16 +201,15 @@ def main():
             )
             # ==========================================
 
-            # -------- Grabación (Actualizado) --------
+            # -------- Grabación --------
             handle_recording(
                 cam_name,
                 frame,
                 camera_resolutions,
-                camera_fps,
                 recording_state,
                 POST_BUFFER_SECONDS, # Pasamos el tiempo de post-buffer
                 alert_triggered,
-                weapon_in_frame
+                amenaza_presente
             )
 
 

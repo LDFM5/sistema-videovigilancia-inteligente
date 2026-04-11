@@ -48,11 +48,10 @@ def handle_recording(
     cam_name,
     frame,
     camera_resolutions,
-    camera_fps,
     recording_state,
     post_buffer_seconds,
     alert_triggered,
-    weapon_in_frame  # <--- NUEVO PARÁMETRO
+    amenaza_presente
 ):
     """
     Controla la grabación dinámica con pre-buffer y post-buffer preciso.
@@ -71,7 +70,7 @@ def handle_recording(
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             filename = os.path.join(EVIDENCE_DIR, f"{cam_name}_{timestamp}.mp4")
             
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            fourcc = cv2.VideoWriter_fourcc(*"avc1")
             fps = RECORDING_FPS
 
             writer = cv2.VideoWriter(filename, fourcc, fps, (w, h))
@@ -97,7 +96,7 @@ def handle_recording(
         state["writer"].write(frame_resized)
 
         # Usamos la detección directa de YOLO, NO la alerta temporal
-        if weapon_in_frame:
+        if amenaza_presente:
             # Mientras el arma esté en el frame actual, el post-buffer NO avanza
             state["post_buffer_start_time"] = None
         else:

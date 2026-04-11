@@ -45,11 +45,16 @@ CONF_WEAPON = 0.5   # Umbral de confianza mínimo
 
 
 # =========================
-# VENTANA TEMPORAL
+# VENTANAS TEMPORALES
 # =========================
+WINDOW_SECONDS = 1.5          
+ACTIVATION_THRESHOLD = 15     
 
-WINDOW_SECONDS = 1.5          # Persistencia requerida en segundos
-ACTIVATION_THRESHOLD = 25     # Detecciones necesarias para activar alerta
+BEHAVIOR_WINDOW_SECONDS = 4.0      
+BEHAVIOR_ACTIVATION_THRESHOLD = 30 # Requiere ~2.5 seg para asaltos
+
+# Umbral ultra rápido para eventos impulsivos (Golpes)
+GOLPE_ACTIVATION_THRESHOLD = 2     # Con solo 2 frames de movimiento brusco, dispara
 
 
 # =========================
@@ -69,6 +74,10 @@ CAMERA_INDEXES = {
     #"usb": 2
 }
 
+# =========================
+# COMPORTAMIENTOS
+# =========================
+UMBRAL_PUNETAZO = 120  # Píxeles por frame para considerar movimiento brusco. Súbelo si hay falsas alarmas.
 
 # =========================
 # COLORES (BGR)

@@ -14,7 +14,15 @@ su responsabilidad es exclusivamente la detección.
 """
 import cv2
 from ultralytics import YOLO
-from config import MODEL_PATH, COLOR_GUN, COLOR_KNIFE, POSE_MODEL_PATH
+from config import MODEL_PATH, COLOR_GUN, COLOR_KNIFE, POSE_MODEL_PATH, UMBRAL_PUNETAZO
+import math
+
+# =========================
+# MEMORIA DE MOVIMIENTO (Multi-Persona)
+# =========================
+# Ahora guardamos un diccionario por cada ID detectado.
+# Ejemplo: { 1: {"muneca_der_ant": (x,y), "muneca_izq_ant": (x,y)}, 2: {...} }
+estado_postura = {}
 
 
 # =========================
@@ -92,49 +100,67 @@ def detect_weapons(model, frame, conf_threshold):
 # DETECCIÓN DE POSE Y COMPORTAMIENTO
 # =========================
 def detect_pose(model, frame, conf_threshold=0.5):
-    """
-    Ejecuta detección de postura, dibuja esqueletos y evalúa comportamientos.
-    Retorna: (comportamiento_detectado, frame)
-    """
-    results = model(frame, conf=conf_threshold, verbose=False)
+    
+    # CAMBIO 1: Usamos .track() en lugar de la inferencia normal.
+    # persist=True le dice al modelo que conecte los frames temporalmente.
+    # tracker="bytetrack.yaml" usa el algoritmo optimizado para vigilancia.
+    results = model.track(
+        frame, 
+        conf=conf_threshold, 
+        persist=True, 
+        tracker="bytetrack.yaml", 
+        verbose=False
+    )
 
-    comportamiento_sospechoso = False
+    asalto_detectado = False
+    golpe_detectado = False
 
-    if len(results[0].boxes) > 0:
-        # 1. Dibujar el esqueleto automáticamente
-        frame = results[0].plot()
-
-        # 2. Extraer los puntos clave (keypoints) de todas las personas detectadas
-        # results[0].keypoints.xy contiene las coordenadas (X, Y)
+    if len(results[0].boxes) > 0 and results[0].boxes.id is not None:
+        frame = results[0].plot() 
         keypoints_personas = results[0].keypoints.xy 
+        ids_personas = results[0].boxes.id.int().cpu().tolist() 
+        ids_activos_este_frame = []
 
-        for persona_kp in keypoints_personas:
-            # persona_kp tiene 17 puntos. Verificamos que tenga suficientes datos.
+        for persona_kp, track_id in zip(keypoints_personas, ids_personas):
+            ids_activos_este_frame.append(track_id)
+            
+            if track_id not in estado_postura:
+                estado_postura[track_id] = {"muneca_der_ant": None, "muneca_izq_ant": None}
+
             if len(persona_kp) >= 11:
-                
-                # Extraer coordenada Y (índice 1) de hombros y muñecas
-                # Nota: El índice 0 sería la coordenada X
-                y_hombro_izq = float(persona_kp[5][1])
-                y_hombro_der = float(persona_kp[6][1])
+                x_muneca_izq = float(persona_kp[9][0])
                 y_muneca_izq = float(persona_kp[9][1])
+                x_muneca_der = float(persona_kp[10][0])
                 y_muneca_der = float(persona_kp[10][1])
+                y_ojo_izq = float(persona_kp[1][1])
+                y_ojo_der = float(persona_kp[2][1])
 
-                # Validación: Si YOLO no ve una muñeca, su valor Y suele ser 0.0
-                if y_muneca_izq > 0 and y_muneca_der > 0 and y_hombro_izq > 0 and y_hombro_der > 0:
+                if y_muneca_izq > 0 and y_muneca_der > 0:
                     
-                    # REGLA: ¿Ambas muñecas están más altas (menor Y) que los hombros?
-                    if y_muneca_izq < y_hombro_izq and y_muneca_der < y_hombro_der:
-                        comportamiento_sospechoso = True
-                        
-                        # Dibujar una advertencia visual muy clara en pantalla
-                        cv2.putText(
-                            frame, 
-                            "ALERTA: MANOS ARRIBA", 
-                            (50, 100), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 
-                            1.5, 
-                            (0, 0, 255), # Rojo
-                            4
-                        )
+                    # REGLA 1: MANOS ARRIBA
+                    if y_ojo_izq > 0 and y_ojo_der > 0:
+                        if y_muneca_izq < y_ojo_izq and y_muneca_der < y_ojo_der:
+                            asalto_detectado = True
+                            cv2.putText(frame, "ALERTA: MANOS ARRIBA", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
-    return comportamiento_sospechoso, frame
+                    # REGLA 2: MOVIMIENTO BRUSCO
+                    memoria_persona = estado_postura[track_id]
+                    if memoria_persona["muneca_der_ant"] is not None:
+                        dist_der = math.hypot(x_muneca_der - memoria_persona["muneca_der_ant"][0], y_muneca_der - memoria_persona["muneca_der_ant"][1])
+                        dist_izq = math.hypot(x_muneca_izq - memoria_persona["muneca_izq_ant"][0], y_muneca_izq - memoria_persona["muneca_izq_ant"][1])
+
+                        # Usamos el umbral importado de config.py
+                        if dist_der > UMBRAL_PUNETAZO or dist_izq > UMBRAL_PUNETAZO:
+                            golpe_detectado = True
+                            cv2.putText(frame, "ALERTA: GOLPE", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+
+                    estado_postura[track_id]["muneca_der_ant"] = (x_muneca_der, y_muneca_der)
+                    estado_postura[track_id]["muneca_izq_ant"] = (x_muneca_izq, y_muneca_izq)
+
+        # Limpieza
+        ids_a_borrar = [tid for tid in estado_postura if tid not in ids_activos_este_frame]
+        for tid in ids_a_borrar:
+            del estado_postura[tid]
+
+    # Devolvemos ambas variables por separado
+    return asalto_detectado, golpe_detectado, frame
