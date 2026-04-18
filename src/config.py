@@ -75,17 +75,19 @@ CAMERA_INDEXES = {
 }
 
 # =========================
-# COMPORTAMIENTOS
-# =========================
-UMBRAL_PUNETAZO = 120  # Píxeles por frame para considerar movimiento brusco. Súbelo si hay falsas alarmas.
-
-# =========================
 # COLORES (BGR)
 # =========================
 
 COLOR_GUN = (0, 0, 255)       # Rojo
 COLOR_KNIFE = (0, 255, 255)   # Amarillo
 COLOR_ALERT = (0, 0, 255)
+
+# =========================
+# COMPORTAMIENTOS
+# =========================
+# Velocidad de golpe: Cuántas veces la longitud de su propio torso 
+# recorrería la mano en 1 segundo si mantuviera esa velocidad.
+UMBRAL_VELOCIDAD_GOLPE = 10.0
 
 # =========================
 # TELEGRAM
