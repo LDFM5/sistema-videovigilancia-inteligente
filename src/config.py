@@ -89,6 +89,10 @@ COLOR_ALERT = (0, 0, 255)
 # recorrería la mano en 1 segundo si mantuviera esa velocidad.
 UMBRAL_VELOCIDAD_GOLPE = 10.0
 
+# Velocidad a la que los hombros deben "desplomarse" hacia el piso.
+# Un valor de 2.0 o 2.5 suele ser perfecto para ignorar a alguien sentándose rápido.
+UMBRAL_VELOCIDAD_CAIDA = 2.0
+
 # =========================
 # TELEGRAM
 # =========================

@@ -14,7 +14,7 @@ su responsabilidad es exclusivamente la detección.
 """
 import cv2
 from ultralytics import YOLO
-from config import MODEL_PATH, COLOR_GUN, COLOR_KNIFE, POSE_MODEL_PATH, UMBRAL_VELOCIDAD_GOLPE
+from config import MODEL_PATH, COLOR_GUN, COLOR_KNIFE, POSE_MODEL_PATH, UMBRAL_VELOCIDAD_GOLPE, UMBRAL_VELOCIDAD_CAIDA
 import math
 import time
 
@@ -23,6 +23,7 @@ estado_postura = {}
 
 # Memoria para mantener el texto en pantalla
 tiempo_ultimo_golpe = 0
+tiempo_ultima_caida = 0
 
 # =========================
 # FUNCIONES AUXILIARES
@@ -117,12 +118,13 @@ def detect_weapons(model, frame, conf_threshold):
 # (Mantén tus importaciones y la función obtener_longitud_torso igual)
 
 def detect_pose(model, frame, conf_threshold=0.5):
-    global tiempo_ultimo_golpe 
+    global tiempo_ultimo_golpe, tiempo_ultima_caida
     
     results = model.track(frame, conf=conf_threshold, persist=True, tracker="bytetrack.yaml", verbose=False)
 
     asalto_detectado = False
     golpe_detectado = False
+    caida_detectada = False
 
     if len(results[0].boxes) > 0 and results[0].boxes.id is not None:
         frame = results[0].plot() 
@@ -146,6 +148,7 @@ def detect_pose(model, frame, conf_threshold=0.5):
                 estado_postura[track_id] = {
                     "muneca_der_ant": None, 
                     "muneca_izq_ant": None,
+                    "hombros_y_ant": None,
                     "tiempo_ant": time.time() 
                 }
 
@@ -204,6 +207,36 @@ def detect_pose(model, frame, conf_threshold=0.5):
                                 golpe_detectado = True
                                 tiempo_ultimo_golpe = tiempo_actual
 
+                # Extraer punto central de los hombros (eje Y)
+                hombros_y = -1
+                if persona_kp[5][1] > 0 and persona_kp[6][1] > 0:
+                    hombros_y = (float(persona_kp[5][1]) + float(persona_kp[6][1])) / 2.0
+
+                # ==========================================
+                # REGLA 3: CAÍDA AL PISO (Desplome vertical)
+                # ==========================================
+                memoria = estado_postura[track_id]
+                tiempo_actual = time.time()
+                delta_t = tiempo_actual - memoria["tiempo_ant"]
+
+                if delta_t > 0.02: 
+                    # Filtro de ruido
+                    distancia_minima_ruido = largo_torso * 0.10
+
+                    # (Aquí va tu código actual de REGLA 2: GOLPES... déjalo igual)
+
+                    # --- EVALUAR CAÍDA ---
+                    if hombros_y > 0 and memoria["hombros_y_ant"] is not None:
+                        # Calculamos cuánto bajaron los hombros en Y
+                        # Nota: En OpenCV, la "Y" crece hacia abajo. Si la Y actual es MAYOR, la persona bajó.
+                        delta_y_hombros = hombros_y - memoria["hombros_y_ant"]
+                        
+                        if delta_y_hombros > distancia_minima_ruido: # Solo evaluamos si bajó significativamente
+                            vel_caida = (delta_y_hombros / delta_t) / largo_torso
+                            if vel_caida > UMBRAL_VELOCIDAD_CAIDA:
+                                caida_detectada = True
+                                tiempo_ultima_caida = tiempo_actual
+
                 # ==========================================
                 # ACTUALIZACIÓN SEGURA DE MEMORIA
                 # ==========================================
@@ -221,16 +254,30 @@ def detect_pose(model, frame, conf_threshold=0.5):
                     
                 estado_postura[track_id]["tiempo_ant"] = tiempo_actual
 
+                # Actualizamos la memoria de los hombros
+                if hombros_y > 0:
+                    estado_postura[track_id]["hombros_y_ant"] = hombros_y
+                else:
+                    estado_postura[track_id]["hombros_y_ant"] = None
+                    
+                estado_postura[track_id]["tiempo_ant"] = tiempo_actual
+
         # Limpieza
         ids_a_borrar = [tid for tid in estado_postura if tid not in ids_activos_este_frame]
         for tid in ids_a_borrar:
             del estado_postura[tid]
 
     # Renderizado
+    # Renderizado de Textos
     if asalto_detectado:
         cv2.putText(frame, "ALERTA: MANOS ARRIBA", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
     if time.time() - tiempo_ultimo_golpe < 1.5:
         cv2.putText(frame, "ALERTA: GOLPE / EMPUJON", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3) 
 
-    return asalto_detectado, golpe_detectado, frame
+    # Texto de caída
+    if time.time() - tiempo_ultima_caida < 1.5:
+        cv2.putText(frame, "EMERGENCIA: CAIDA DETECTADA", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3) 
+
+    # IMPORTANTE: Ahora la función devuelve 3 amenazas
+    return asalto_detectado, golpe_detectado, caida_detectada, frame

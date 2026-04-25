@@ -100,13 +100,14 @@ def main():
 
             # -------- Detección de Postura --------
             # Recibimos las variables separadas
-            asalto_detectado, golpe_detectado, frame = detect_pose(pose_model, frame, 0.5)
+            asalto_detectado, golpe_detectado, caida_detectada, frame = detect_pose(pose_model, frame, 0.5)
 
             # ==================================================
             # LÓGICA TEMPORAL 
             # ==================================================
             alerta_arma = update_window(cam_name, weapon_in_frame, windows_armas, ACTIVATION_THRESHOLD, alert_state_armas)
             alerta_asalto = update_window(cam_name, asalto_detectado, windows_asalto, BEHAVIOR_ACTIVATION_THRESHOLD, alert_state_asalto)
+            alerta_caida = update_window(cam_name, caida_detectada, windows_golpe, GOLPE_ACTIVATION_THRESHOLD, alert_state_golpe)
             
             # Usamos el umbral casi inmediato para los golpes
             alerta_golpe = update_window(
@@ -117,8 +118,8 @@ def main():
                 alert_state_golpe
             )
 
-            alert_triggered = alerta_arma or alerta_asalto or alerta_golpe
-            amenaza_presente = weapon_in_frame or asalto_detectado or golpe_detectado
+            alert_triggered = alerta_arma or alerta_asalto or alerta_golpe or alerta_caida
+            amenaza_presente = weapon_in_frame or asalto_detectado or golpe_detectado or caida_detectada
 
             # ==================================================
             # GESTIÓN INTELIGENTE DE ALERTAS
@@ -141,6 +142,10 @@ def main():
             if alerta_golpe and "golpe" not in alertas_enviadas_evento[cam_name]:
                 send_alert(cam_name, "🥊 Agresión física / Movimiento brusco detectado")
                 alertas_enviadas_evento[cam_name].add("golpe")
+
+            if alerta_caida and "caida" not in alertas_enviadas_evento[cam_name]:
+                send_alert(cam_name, "⚠️ Hombre caído / Desplome detectado")
+                alertas_enviadas_evento[cam_name].add("caida")
 
             # ==========================================
             # MONITOREO DE RENDIMIENTO
