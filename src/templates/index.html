@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <title>IA Security Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f0f0f; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .main-container { padding: 20px; }
+        .video-box { 
+            background: #000; 
+            border: 2px solid #2c2c2c; 
+            border-radius: 12px; 
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            aspect-ratio: 16/9;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #video-feed { width: 100%; height: 100%; object-fit: contain; }
+        .control-panel { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 20px; }
+        .status-badge { font-size: 0.8rem; padding: 5px 12px; border-radius: 20px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar border-bottom border-secondary mb-4">
+        <div class="container-fluid">
+            <span class="navbar-brand fw-bold text-primary">🛡️ SENTINEL AI <span class="text-white">DASHBOARD</span></span>
+            <span class="status-badge bg-success text-white">SISTEMA ACTIVO</span>
+        </div>
+    </nav>
+
+    <div class="container-fluid main-container">
+        <div class="row">
+            <div class="col-lg-8">
+                <div class="video-box mb-3">
+                    <img id="video-feed" src="{{ url_for('video_feed') }}">
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="control-panel">
+                    <h5 class="mb-4">Ajustes de Sensibilidad (RAM)</h5>
+                    
+                    <div class="mb-4">
+                        <label class="form-label d-flex justify-content-between">
+                            Velocidad de Golpe <span id="val-golpe" class="text-primary">{{ conf.UMBRAL_VELOCIDAD_GOLPE }}</span>
+                        </label>
+                        <input type="range" class="form-range" id="input-golpe" 
+                               min="1" max="5" step="0.1" value="{{ conf.UMBRAL_VELOCIDAD_GOLPE }}"
+                               oninput="document.getElementById('val-golpe').innerText = this.value">
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label d-flex justify-content-between">
+                            Velocidad de Caída <span id="val-caida" class="text-primary">{{ conf.UMBRAL_VELOCIDAD_CAIDA }}</span>
+                        </label>
+                        <input type="range" class="form-range" id="input-caida" 
+                               min="1" max="4" step="0.1" value="{{ conf.UMBRAL_VELOCIDAD_CAIDA }}"
+                               oninput="document.getElementById('val-caida').innerText = this.value">
+                    </div>
+
+                    <button class="btn btn-primary w-100 fw-bold" onclick="aplicarCambios()">APLICAR CAMBIOS EN CALIENTE</button>
+                    <p class="text-muted x-small mt-3">Nota: Los cambios se resetean al reiniciar el servidor para seguridad del archivo físico.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function aplicarCambios() {
+            const data = {
+                UMBRAL_VELOCIDAD_GOLPE: document.getElementById('input-golpe').value,
+                UMBRAL_VELOCIDAD_CAIDA: document.getElementById('input-caida').value
+            };
+            fetch('/update_config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            }).then(() => alert("✅ Configuración actualizada en memoria RAM"));
+        }
+    </script>
+</body>
+</html>

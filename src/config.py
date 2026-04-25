@@ -63,7 +63,7 @@ GOLPE_ACTIVATION_THRESHOLD = 2     # Con solo 2 frames de movimiento brusco, dis
 
 PRE_BUFFER_SECONDS = 10    # Segundos guardados ANTES de que se detecte el arma
 POST_BUFFER_SECONDS = 15   # Segundos de grabación DESPUÉS de que el arma desaparece
-RECORDING_FPS = 20
+RECORDING_FPS = 15
 
 # =========================
 # CÁMARAS

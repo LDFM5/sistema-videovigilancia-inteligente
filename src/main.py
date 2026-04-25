@@ -23,16 +23,7 @@ import psutil
 import time
 
 # Importa las nuevas variables
-from config import (
-    CONF_WEAPON,
-    WINDOW_SECONDS,
-    ACTIVATION_THRESHOLD,
-    BEHAVIOR_WINDOW_SECONDS,
-    BEHAVIOR_ACTIVATION_THRESHOLD,
-    GOLPE_ACTIVATION_THRESHOLD,
-    PRE_BUFFER_SECONDS,
-    POST_BUFFER_SECONDS
-)
+import config
 
 from cameras import initialize_cameras, read_frames
 from detection import load_weapon_model, detect_weapons, load_pose_model, detect_pose
@@ -41,7 +32,7 @@ from recorder import initialize_recording_state, handle_recording
 from alerts import send_alert
 
 
-def main():
+def ejecutar_sistema_principal(shared_state):
 
     print("🔧 Inicializando sistema...")
 
@@ -59,9 +50,9 @@ def main():
     # =========================
     # Inicializar ventanas temporales (SEPARADAS)
     # =========================
-    windows_armas = initialize_windows(camera_fps, WINDOW_SECONDS)
-    windows_asalto = initialize_windows(camera_fps, BEHAVIOR_WINDOW_SECONDS)
-    windows_golpe = initialize_windows(camera_fps, BEHAVIOR_WINDOW_SECONDS) # Usa la misma duración que asalto o crea una nueva
+    windows_armas = initialize_windows(camera_fps, config.WINDOW_SECONDS)
+    windows_asalto = initialize_windows(camera_fps, config.BEHAVIOR_WINDOW_SECONDS)
+    windows_golpe = initialize_windows(camera_fps, config.BEHAVIOR_WINDOW_SECONDS) # Usa la misma duración que asalto o crea una nueva
 
     alert_state_armas = {cam_name: False for cam_name in cameras}
     alert_state_asalto = {cam_name: False for cam_name in cameras}
@@ -78,9 +69,9 @@ def main():
     # Estado de grabación (Actualizado)
     # =========================
     # Ahora pasamos los fps de las cámaras y el tiempo de pre-buffer
-    recording_state = initialize_recording_state(cameras, PRE_BUFFER_SECONDS)
+    recording_state = initialize_recording_state(cameras, config.PRE_BUFFER_SECONDS)
 
-    print("▶ Sistema iniciado. Presiona 'q' para salir.")
+    # print("▶ Sistema iniciado. Presiona 'q' para salir.")
 
     # =========================
     # LOOP PRINCIPAL
@@ -95,7 +86,7 @@ def main():
             weapon_in_frame, frame = detect_weapons(
                 weapon_model,
                 frame,
-                CONF_WEAPON
+                config.CONF_WEAPON
             )
 
             # -------- Detección de Postura --------
@@ -105,16 +96,16 @@ def main():
             # ==================================================
             # LÓGICA TEMPORAL 
             # ==================================================
-            alerta_arma = update_window(cam_name, weapon_in_frame, windows_armas, ACTIVATION_THRESHOLD, alert_state_armas)
-            alerta_asalto = update_window(cam_name, asalto_detectado, windows_asalto, BEHAVIOR_ACTIVATION_THRESHOLD, alert_state_asalto)
-            alerta_caida = update_window(cam_name, caida_detectada, windows_golpe, GOLPE_ACTIVATION_THRESHOLD, alert_state_golpe)
+            alerta_arma = update_window(cam_name, weapon_in_frame, windows_armas, config.ACTIVATION_THRESHOLD, alert_state_armas)
+            alerta_asalto = update_window(cam_name, asalto_detectado, windows_asalto, config.BEHAVIOR_ACTIVATION_THRESHOLD, alert_state_asalto)
+            alerta_caida = update_window(cam_name, caida_detectada, windows_golpe, config.GOLPE_ACTIVATION_THRESHOLD, alert_state_golpe)
             
             # Usamos el umbral casi inmediato para los golpes
             alerta_golpe = update_window(
                 cam_name, 
                 golpe_detectado, 
                 windows_golpe, 
-                GOLPE_ACTIVATION_THRESHOLD, # <--- ¡Cambiamos esto!
+                config.GOLPE_ACTIVATION_THRESHOLD, # <--- ¡Cambiamos esto!
                 alert_state_golpe
             )
 
@@ -212,16 +203,29 @@ def main():
                 frame,
                 camera_resolutions,
                 recording_state,
-                POST_BUFFER_SECONDS, # Pasamos el tiempo de post-buffer
+                config.POST_BUFFER_SECONDS, # Pasamos el tiempo de post-buffer
                 alert_triggered,
                 amenaza_presente
             )
 
 
-            cv2.imshow(f"Camera: {cam_name}", frame)
+            # cv2.imshow(f"Camera: {cam_name}", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+        # if cv2.waitKey(1) & 0xFF == ord("q"):
+        #    break
+
+        # ==========================================
+        # GUARDAR EN LA RAM PARA FLASK (CORREGIDO)
+        # ==========================================
+        with shared_state.lock:
+            # 1. Leemos los valores en vivo de la RAM
+            config.UMBRAL_VELOCIDAD_GOLPE = shared_state.config_ram["UMBRAL_VELOCIDAD_GOLPE"]
+            config.UMBRAL_VELOCIDAD_CAIDA = shared_state.config_ram["UMBRAL_VELOCIDAD_CAIDA"]
+            
+            # 2. Guardamos el frame y el estado de grabación usando "puntos"
+            shared_state.frame = frame.copy() 
+            # Si necesitas saber si está grabando en el futuro, puedes agregarlo así:
+            # shared_state.grabando = recording_state[cam_name]["recording"]
 
     # =========================
     # LIMPIEZA
@@ -232,5 +236,7 @@ def main():
     cv2.destroyAllWindows()
 
 
+# Esto evita que el código corra solo al ser importado por Flask
 if __name__ == "__main__":
-    main()
+    # Si ejecutas main.py directamente, creamos un diccionario vacío y corre normal
+    ejecutar_sistema_principal({'frame': None})

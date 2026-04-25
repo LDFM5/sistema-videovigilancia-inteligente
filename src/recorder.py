@@ -18,6 +18,7 @@ import time
 import cv2
 from collections import deque
 from config import EVIDENCE_DIR, RECORDING_FPS
+from alerts import send_video_alert
 
 # =========================
 # INICIALIZAR ESTADO
@@ -84,6 +85,8 @@ def handle_recording(
             state["recording"] = True
             state["writer"] = writer
             state["post_buffer_start_time"] = None
+            
+            state["current_file"] = filename
 
             for b_frame in state["frame_buffer"]:
                 writer.write(b_frame)
@@ -106,10 +109,16 @@ def handle_recording(
             else:
                 elapsed = time.time() - state["post_buffer_start_time"]
                 
-                if elapsed >= post_buffer_seconds:
-                    print(f"✅ Evento finalizado. Clip guardado exitosamente ({cam_name})")
-                    
+                if elapsed >= post_buffer_seconds:                    
                     state["writer"].release()
                     state["writer"] = None
                     state["recording"] = False
                     state["post_buffer_start_time"] = None
+
+                    # ==========================================
+                    # 2. NUEVO: ENVIAR A TELEGRAM
+                    # ==========================================
+                    archivo_guardado = state["current_file"]
+                    send_video_alert(archivo_guardado, "🎥 Evidencia capturada: Actividad Sospechosa")
+
+                    print(f"✅ Evento finalizado. Clip guardado exitosamente ({cam_name})")
