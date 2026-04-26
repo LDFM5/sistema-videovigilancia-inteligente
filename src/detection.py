@@ -92,7 +92,7 @@ def detect_weapons(model, frame, conf_threshold):
             label = model.names[cls]
 
             # Selección de color según tipo
-            color = COLOR_GUN if label == "gun" else COLOR_KNIFE
+            color = COLOR_GUN if label == "pistol" else COLOR_KNIFE
 
             # Dibujar caja
             frame[x1:x1]  # Dummy access to avoid lint warnings (no effect)
@@ -179,11 +179,24 @@ def detect_pose(model, frame, conf_threshold=0.5):
                 # ==========================================
                 memoria = estado_postura[track_id]
                 tiempo_actual = time.time()
+                delta_t = tiempo_actual - memoria["tiempo_ant"]  
+
+                # Extraer punto central de los hombros (eje Y)
+                hombros_y = -1
+                if persona_kp[5][1] > 0 and persona_kp[6][1] > 0:
+                    hombros_y = (float(persona_kp[5][1]) + float(persona_kp[6][1])) / 2.0
+
+                # ==========================================
+                # REGLA 3: CAÍDA AL PISO (Desplome vertical)
+                # ==========================================
+                memoria = estado_postura[track_id]
+                tiempo_actual = time.time()
                 delta_t = tiempo_actual - memoria["tiempo_ant"]
 
-                # ESTABILIZADOR: Ignorar si el ciclo fue anormalmente rápido (menor a 20ms)
                 if delta_t > 0.02: 
-                    
+                    # Filtro de ruido
+                    distancia_minima_ruido = largo_torso * 0.10
+
                     # FILTRO ANTI-RUIDO: Ignorar vibraciones menores al 10% del torso
                     distancia_minima_ruido = largo_torso * 0.10
 
@@ -206,24 +219,6 @@ def detect_pose(model, frame, conf_threshold=0.5):
                             if vel_izq > UMBRAL_VELOCIDAD_GOLPE:
                                 golpe_detectado = True
                                 tiempo_ultimo_golpe = tiempo_actual
-
-                # Extraer punto central de los hombros (eje Y)
-                hombros_y = -1
-                if persona_kp[5][1] > 0 and persona_kp[6][1] > 0:
-                    hombros_y = (float(persona_kp[5][1]) + float(persona_kp[6][1])) / 2.0
-
-                # ==========================================
-                # REGLA 3: CAÍDA AL PISO (Desplome vertical)
-                # ==========================================
-                memoria = estado_postura[track_id]
-                tiempo_actual = time.time()
-                delta_t = tiempo_actual - memoria["tiempo_ant"]
-
-                if delta_t > 0.02: 
-                    # Filtro de ruido
-                    distancia_minima_ruido = largo_torso * 0.10
-
-                    # (Aquí va tu código actual de REGLA 2: GOLPES... déjalo igual)
 
                     # --- EVALUAR CAÍDA ---
                     if hombros_y > 0 and memoria["hombros_y_ant"] is not None:

@@ -20,6 +20,13 @@ sin alterar la lógica de los módulos principales.
 import os
 
 # =========================
+# CONTROL DE MÓDULOS DE IA (FEATURE FLAGS)
+# =========================
+# Pon en 'False' el que no necesites para ahorrar RAM y CPU
+ACTIVAR_MODELO_ARMAS = True
+ACTIVAR_MODELO_COMPORTAMIENTO = False
+
+# =========================
 # RUTAS BASE
 # =========================
 
@@ -33,7 +40,7 @@ EVIDENCE_DIR = os.path.join(BASE_DIR, "evidences")
 os.makedirs(EVIDENCE_DIR, exist_ok=True)
 
 # Ruta del modelo entrenado
-MODEL_PATH = os.path.join(MODELS_DIR, "best.pt")
+MODEL_PATH = os.path.join(MODELS_DIR, "Modelo_Armas.pt")
 POSE_MODEL_PATH = os.path.join(MODELS_DIR, "yolov8n-pose.pt")
 
 

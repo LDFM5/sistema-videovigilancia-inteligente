@@ -18,7 +18,8 @@ sino que conecta los módulos especializados del sistema.
 """
 
 import cv2
-import os       
+import os      
+import atexit
 import psutil   
 import time
 
@@ -36,11 +37,18 @@ def ejecutar_sistema_principal(shared_state):
 
     print("🔧 Inicializando sistema...")
 
-    # =========================
-    # Cargar modelo
-    # =========================
-    weapon_model = load_weapon_model()
-    pose_model = load_pose_model()
+    # =================================
+    # 1. CARGA MODULAR DE MODELOS 
+    # =================================
+    weapon_model = None
+    if config.ACTIVAR_MODELO_ARMAS:
+        print(" -> Cargando modelo de detección de ARMAS...")
+        weapon_model = load_weapon_model()
+
+    pose_model = None
+    if config.ACTIVAR_MODELO_COMPORTAMIENTO:
+        print(" -> Cargando modelo de COMPORTAMIENTO (Postura)...")
+        pose_model = load_pose_model()
 
     # =========================
     # Inicializar cámaras
@@ -71,8 +79,19 @@ def ejecutar_sistema_principal(shared_state):
     # Ahora pasamos los fps de las cámaras y el tiempo de pre-buffer
     recording_state = initialize_recording_state(cameras, config.PRE_BUFFER_SECONDS)
 
-    # print("▶ Sistema iniciado. Presiona 'q' para salir.")
+    # ==========================================
+    # SEGURO DE LIMPIEZA (Se ejecuta al dar Ctrl+C)
+    # ==========================================
+    def limpieza_segura():
+        print("\n🧹 Apagando sistema: Liberando cámaras y memoria...")
+        for cap in cameras.values(): # O cap.release() si solo usas una variable
+            cap.release()
+        cv2.destroyAllWindows()
+        print("✅ Sistema apagado correctamente.")
 
+    # Registramos la función para que Python la ejecute justo antes de cerrarse
+    atexit.register(limpieza_segura)
+    
     # =========================
     # LOOP PRINCIPAL
     # =========================
@@ -80,18 +99,31 @@ def ejecutar_sistema_principal(shared_state):
 
         frames = read_frames(cameras)
 
+        # Inicializamos variables de alerta en False por defecto
+        weapon_in_frame = False
+        asalto_detectado = False
+        golpe_detectado = False
+        caida_detectada = False
+
         for cam_name, frame in frames.items():
 
-            # -------- Detección de Armas --------
-            weapon_in_frame, frame = detect_weapons(
-                weapon_model,
-                frame,
-                config.CONF_WEAPON
-            )
+            # --- Módulo de Armas ---
+            if config.ACTIVAR_MODELO_ARMAS and weapon_model is not None:
+                weapon_in_frame, frame = detect_weapons(
+                    weapon_model,
+                    frame,
+                    config.CONF_WEAPON
+                )
 
-            # -------- Detección de Postura --------
-            # Recibimos las variables separadas
-            asalto_detectado, golpe_detectado, caida_detectada, frame = detect_pose(pose_model, frame, 0.5)
+            frame_procesado = frame.copy()
+
+            # --- Módulo de Comportamiento ---
+            if config.ACTIVAR_MODELO_COMPORTAMIENTO and pose_model is not None:
+                asalto_detectado, golpe_detectado, caida_detectada, frame_procesado = detect_pose(
+                    pose_model, 
+                    frame_procesado, 
+                    0.5
+                ) 
 
             # ==================================================
             # LÓGICA TEMPORAL 
@@ -226,15 +258,6 @@ def ejecutar_sistema_principal(shared_state):
             shared_state.frame = frame.copy() 
             # Si necesitas saber si está grabando en el futuro, puedes agregarlo así:
             # shared_state.grabando = recording_state[cam_name]["recording"]
-
-    # =========================
-    # LIMPIEZA
-    # =========================
-    for cap in cameras.values():
-        cap.release()
-
-    cv2.destroyAllWindows()
-
 
 # Esto evita que el código corra solo al ser importado por Flask
 if __name__ == "__main__":
