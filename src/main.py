@@ -99,6 +99,9 @@ def ejecutar_sistema_principal(shared_state):
 
         frames = read_frames(cameras)
 
+        if not frames:
+            break
+
         # Inicializamos variables de alerta en False por defecto
         weapon_in_frame = False
         asalto_detectado = False
@@ -115,13 +118,13 @@ def ejecutar_sistema_principal(shared_state):
                     config.CONF_WEAPON
                 )
 
-            frame_procesado = frame.copy()
+            frame = frame.copy()
 
             # --- Módulo de Comportamiento ---
             if config.ACTIVAR_MODELO_COMPORTAMIENTO and pose_model is not None:
-                asalto_detectado, golpe_detectado, caida_detectada, frame_procesado = detect_pose(
+                asalto_detectado, golpe_detectado, caida_detectada, frame = detect_pose(
                     pose_model, 
-                    frame_procesado, 
+                    frame, 
                     0.5
                 ) 
 

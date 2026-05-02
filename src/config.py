@@ -24,7 +24,15 @@ import os
 # =========================
 # Pon en 'False' el que no necesites para ahorrar RAM y CPU
 ACTIVAR_MODELO_ARMAS = True
-ACTIVAR_MODELO_COMPORTAMIENTO = False
+ACTIVAR_MODELO_COMPORTAMIENTO = True
+
+# =========================
+# CONTROL DE COMPORTAMIENTOS ESPECÍFICOS (YOLO Pose)
+# =========================
+# Pon en 'False' el que quieras ignorar
+DETECTAR_ASALTO = True
+DETECTAR_GOLPE = False
+DETECTAR_CAIDA = False
 
 # =========================
 # RUTAS BASE

@@ -14,7 +14,7 @@ su responsabilidad es exclusivamente la detección.
 """
 import cv2
 from ultralytics import YOLO
-from config import MODEL_PATH, COLOR_GUN, COLOR_KNIFE, POSE_MODEL_PATH, UMBRAL_VELOCIDAD_GOLPE, UMBRAL_VELOCIDAD_CAIDA
+import config
 import math
 import time
 
@@ -49,7 +49,7 @@ def load_weapon_model():
     """
     Carga el modelo de armas desde la ruta definida en config.
     """
-    model = YOLO(MODEL_PATH)
+    model = YOLO(config.MODEL_PATH)
     print("✅ Modelo de armas cargado correctamente.")
     return model
 
@@ -57,7 +57,7 @@ def load_pose_model():
     """
     Carga el modelo de estimación de postura.
     """
-    model = YOLO(POSE_MODEL_PATH)
+    model = YOLO(config.POSE_MODEL_PATH)
     print("✅ Modelo de Pose cargado correctamente.")
     return model
 
@@ -92,7 +92,7 @@ def detect_weapons(model, frame, conf_threshold):
             label = model.names[cls]
 
             # Selección de color según tipo
-            color = COLOR_GUN if label == "pistol" else COLOR_KNIFE
+            color = config.COLOR_GUN if label == "pistol" else config.COLOR_KNIFE
 
             # Dibujar caja
             frame[x1:x1]  # Dummy access to avoid lint warnings (no effect)
@@ -206,7 +206,7 @@ def detect_pose(model, frame, conf_threshold=0.5):
                         
                         if d_der > distancia_minima_ruido: # Si superó el ruido, calculamos velocidad
                             vel_der = (d_der / delta_t) / largo_torso
-                            if vel_der > UMBRAL_VELOCIDAD_GOLPE:
+                            if vel_der > config.UMBRAL_VELOCIDAD_GOLPE:
                                 golpe_detectado = True
                                 tiempo_ultimo_golpe = tiempo_actual
 
@@ -216,7 +216,7 @@ def detect_pose(model, frame, conf_threshold=0.5):
                         
                         if d_izq > distancia_minima_ruido: # Si superó el ruido, calculamos velocidad
                             vel_izq = (d_izq / delta_t) / largo_torso
-                            if vel_izq > UMBRAL_VELOCIDAD_GOLPE:
+                            if vel_izq > config.UMBRAL_VELOCIDAD_GOLPE:
                                 golpe_detectado = True
                                 tiempo_ultimo_golpe = tiempo_actual
 
@@ -228,7 +228,7 @@ def detect_pose(model, frame, conf_threshold=0.5):
                         
                         if delta_y_hombros > distancia_minima_ruido: # Solo evaluamos si bajó significativamente
                             vel_caida = (delta_y_hombros / delta_t) / largo_torso
-                            if vel_caida > UMBRAL_VELOCIDAD_CAIDA:
+                            if vel_caida > config.UMBRAL_VELOCIDAD_CAIDA:
                                 caida_detectada = True
                                 tiempo_ultima_caida = tiempo_actual
 
@@ -262,6 +262,19 @@ def detect_pose(model, frame, conf_threshold=0.5):
         for tid in ids_a_borrar:
             del estado_postura[tid]
 
+    
+    # ==================================================
+    # APLICAR LOS INTERRUPTORES DE CONFIG
+    # ==================================================
+    if not config.DETECTAR_ASALTO:
+        asalto_detectado = False
+        
+    if not config.DETECTAR_GOLPE:
+        golpe_detectado = False
+        
+    if not config.DETECTAR_CAIDA:
+        caida_detectada = False
+    
     # Renderizado
     # Renderizado de Textos
     if asalto_detectado:

@@ -47,7 +47,6 @@ def initialize_cameras():
         # ==================================================
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 10000)   # Ancho deseado
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 10000)   # Alto deseado
-        # (Si tu cámara soporta 1080p, puedes intentar 1920 y 1080)
         # ==================================================
 
         cameras[cam_name] = cap
