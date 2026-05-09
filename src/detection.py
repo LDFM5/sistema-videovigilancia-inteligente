@@ -68,47 +68,37 @@ def load_pose_model():
 def detect_weapons(model, frame, conf_threshold):
     """
     Ejecuta detección de armas sobre un frame.
-
-    Retorna:
-        weapon_detected (bool)
-        frame (con cajas dibujadas)
+    En MODO_DEBUG dibuja todo lo que reconoce, pero solo activa alertas para armas reales.
     """
+    # 1. Obtener los IDs numéricos de las armas reales (firearm, melee_weapon)
+    ids_armas = [id_clase for id_clase, nombre in model.names.items() if nombre in config.CLASES_ARMAS_ALERTA]
 
-    results = model(
+    # 2. MAGIA DEL FILTRO: 
+    # Si MODO_DEBUG es True, pasamos None (detectar todo). 
+    # Si es False, pasamos solo los IDs de las armas.
+    filtro_clases = None if config.MODO_DEBUG else (ids_armas if ids_armas else None)
+
+    # 3. YOLO predice usando el filtro seleccionado
+    results = model.predict(
         frame,
         conf=conf_threshold,
+        classes=filtro_clases,
         verbose=False
     )
 
     weapon_detected = False
 
-    for r in results:
-        for box in r.boxes:
-            weapon_detected = True
-
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            conf = float(box.conf[0])
-            cls = int(box.cls[0])
-            label = model.names[cls]
-
-            # Selección de color según tipo
-            color = config.COLOR_GUN if label == "pistol" else config.COLOR_KNIFE
-
-            # Dibujar caja
-            frame[x1:x1]  # Dummy access to avoid lint warnings (no effect)
-
-            import cv2
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-
-            cv2.putText(
-                frame,
-                f"{label.upper()} {conf:.2f}",
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                2
-            )
+    # 4. Si detectó algo en la imagen
+    if len(results) > 0 and len(results[0].boxes) > 0:
+        
+        # Debemos revisar si entre lo que encontró hay un arma real
+        for box in results[0].boxes:
+            if int(box.cls[0]) in ids_armas:
+                weapon_detected = True
+                break # Con un arma que encontremos es suficiente para dar la alerta
+        
+        # YOLO dibuja automáticamente los cuadros sobre la imagen
+        frame = results[0].plot()
 
     return weapon_detected, frame
 

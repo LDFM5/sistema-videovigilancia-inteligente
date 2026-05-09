@@ -20,11 +20,19 @@ sin alterar la lógica de los módulos principales.
 import os
 
 # =========================
+# MODO DESARROLLADOR
+# =========================
+# True: Muestra TODAS las clases (celulares, etc.) en pantalla para pruebas. 
+#       (Nota: Las alertas/grabaciones seguirán disparándose SOLO con las armas reales).
+# False: MODO PRODUCCIÓN. Solo dibuja las armas en pantalla. Ignora lo demás.
+MODO_DEBUG = False
+
+# =========================
 # CONTROL DE MÓDULOS DE IA (FEATURE FLAGS)
 # =========================
 # Pon en 'False' el que no necesites para ahorrar RAM y CPU
 ACTIVAR_MODELO_ARMAS = True
-ACTIVAR_MODELO_COMPORTAMIENTO = True
+ACTIVAR_MODELO_COMPORTAMIENTO = False
 
 # =========================
 # CONTROL DE COMPORTAMIENTOS ESPECÍFICOS (YOLO Pose)
@@ -48,7 +56,7 @@ EVIDENCE_DIR = os.path.join(BASE_DIR, "evidences")
 os.makedirs(EVIDENCE_DIR, exist_ok=True)
 
 # Ruta del modelo entrenado
-MODEL_PATH = os.path.join(MODELS_DIR, "Modelo_Armas.pt")
+MODEL_PATH = os.path.join(MODELS_DIR, "test_modelo_armas.pt")
 POSE_MODEL_PATH = os.path.join(MODELS_DIR, "yolov8n-pose.pt")
 
 
@@ -90,12 +98,9 @@ CAMERA_INDEXES = {
 }
 
 # =========================
-# COLORES (BGR)
+# CLASES DE DETECCIÓN DE ARMAS
 # =========================
-
-COLOR_GUN = (0, 0, 255)       # Rojo
-COLOR_KNIFE = (0, 255, 255)   # Amarillo
-COLOR_ALERT = (0, 0, 255)
+CLASES_ARMAS_ALERTA = ["firearm", "melee_weapon"]
 
 # =========================
 # COMPORTAMIENTOS

@@ -5,7 +5,7 @@ from flask import Flask, render_template, Response, request, jsonify
 
 # Importamos tu lógica de los otros archivos
 import config
-from main import ejecutar_sistema_principal 
+from main import ejecutar_sistema_principal
 
 app = Flask(__name__)
 

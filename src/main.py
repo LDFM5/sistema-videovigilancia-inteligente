@@ -17,13 +17,12 @@ No contiene lógica interna de detección, grabación o notificación,
 sino que conecta los módulos especializados del sistema.
 """
 
-import cv2
-import os      
-import atexit
-import psutil   
+import cv2     
+import atexit  
 import time
 
-# Importa las nuevas variables
+import time
+from visualization import draw_performance_overlay  # Importamos el UI
 import config
 
 from cameras import initialize_cameras, read_frames
@@ -176,61 +175,13 @@ def ejecutar_sistema_principal(shared_state):
             # ==========================================
             # MONITOREO DE RENDIMIENTO
             # ==========================================
-            # 1. Calcular FPS reales
+            # Calcular FPS reales
             tiempo_actual = time.time()
-            # Evitamos división por cero en el primer frame
-            if tiempo_anterior > 0:
-                fps_real = 1.0 / (tiempo_actual - tiempo_anterior)
-            else:
-                fps_real = 0.0
+            fps_real = 1.0 / (tiempo_actual - tiempo_anterior) if tiempo_anterior > 0 else 0.0
             tiempo_anterior = tiempo_actual
 
-            # 2. Obtener datos de RAM y CPU
-            proceso = psutil.Process(os.getpid())
-            ram_mb = proceso.memory_info().rss / (1024 * 1024)
-            ram_app_pct = proceso.memory_percent()
-            ram_pc_pct = psutil.virtual_memory().percent
-            cpu_percent = psutil.cpu_percent()
-
-            # 3. Crear el texto a mostrar (Ahora incluyendo los FPS)
-            texto_rendimiento = f"FPS: {int(fps_real)} | RAM App: {ram_mb:.1f}MB ({ram_app_pct:.1f}%) | RAM PC: {ram_pc_pct}% | CPU: {cpu_percent}%"
-
-            # 2. Configuración visual del texto
-            fuente = cv2.FONT_HERSHEY_SIMPLEX
-            escala_fuente = 0.5         # Letra más pequeña (antes 0.6)
-            grosor_fuente = 1           # Más delgada
-            color_texto = (200, 200, 200) # Gris claro en formato (B, G, R)
-            
-            # 3. Calcular el tamaño exacto del texto para hacer el rectángulo a medida
-            (ancho_texto, alto_texto), baseline = cv2.getTextSize(texto_rendimiento, fuente, escala_fuente, grosor_fuente)
-            
-            # Coordenadas donde empezará el texto
-            x, y = 5, 5 + alto_texto
-            
-            # Coordenadas del rectángulo de fondo (con un poco de margen)
-            rect_x1, rect_y1 = x - 5, y - alto_texto - 5
-            rect_x2, rect_y2 = x + ancho_texto + 5, y + baseline + 5
-
-            # 4. Crear el fondo negro semitransparente
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 0, 0), -1) # -1 rellena el rectángulo de negro
-            
-            # Mezclar el overlay con el frame original (0.5 = 50% de opacidad)
-            opacidad = 0.5 
-            cv2.addWeighted(overlay, opacidad, frame, 1 - opacidad, 0, frame)
-
-            # 5. Dibujar el texto gris encima del fondo ya mezclado
-            cv2.putText(
-                frame, 
-                texto_rendimiento, 
-                (x, y), 
-                fuente, 
-                escala_fuente, 
-                color_texto, 
-                grosor_fuente,
-                cv2.LINE_AA # Suaviza los bordes de las letras
-            )
-            # ==========================================
+            # Dibujar el rectángulo gris con los datos en el frame
+            frame = draw_performance_overlay(frame, fps_real)
 
             # -------- Grabación --------
             handle_recording(
