@@ -94,7 +94,8 @@ RECORDING_FPS = 15
 
 CAMERA_INDEXES = {
     "webcam": 0,
-    #"usb": 2
+    "phone": 1,
+    "usb": 2
 }
 
 # =========================

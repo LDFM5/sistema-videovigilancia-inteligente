@@ -2,57 +2,70 @@ import cv2
 import threading
 import time
 from flask import Flask, render_template, Response, request, jsonify
-
-# Importamos tu lógica de los otros archivos
 import config
 from main import ejecutar_sistema_principal
 
 app = Flask(__name__)
 
-# --- MEMORIA COMPARTIDA SEGURA ---
 class EstadoSistema:
     def __init__(self):
-        self.frame = None
-        self.lock = threading.Lock() # Evita conflictos de lectura/escritura
+        self.frames = {} 
+        self.lock = threading.Lock()
         self.config_ram = {
-            "UMBRAL_VELOCIDAD_GOLPE": config.UMBRAL_VELOCIDAD_GOLPE,
-            "UMBRAL_VELOCIDAD_CAIDA": config.UMBRAL_VELOCIDAD_CAIDA
+            "UMBRAL_VELOCIDAD_GOLPE": 15.0,
+            "UMBRAL_VELOCIDAD_CAIDA": 20.0
         }
 
 estado = EstadoSistema()
 
-def generate_frames():
+# El generador recibe qué cámara queremos transmitir
+def generar_frames(cam_name, alta_calidad=False):
     while True:
-        frame_actual = None
-        
-        # 1. Entramos rápido, copiamos y SALIMOS del candado
         with estado.lock:
-            if estado.frame is not None:
-                frame_actual = estado.frame.copy()
-        
-        # 2. Si YOLO aún no arranca, esperamos pacientemente
-        if frame_actual is None:
-            time.sleep(0.1) # ¡Esta es la línea que salva el sistema!
+            if cam_name not in estado.frames or estado.frames[cam_name] is None:
+                frame = None
+            else:
+                frame = estado.frames[cam_name].copy()
+
+        if frame is None:
+            time.sleep(0.1)
             continue
-            
-        # 3. Procesamos la imagen de OpenCV a Web FUERA del candado 
-        # (Así el motor puede seguir trabajando sin estorbos)
-        ret, buffer = cv2.imencode('.jpg', frame_actual)
-        frame_bytes = buffer.tobytes()
+
+        alto, ancho = frame.shape[:2]
+
+        # LÓGICA DINÁMICA DE CALIDAD
+        if alta_calidad:
+            nuevo_ancho = 1280 # HD
+            calidad_jpeg = 85
+        else:
+            nuevo_ancho = 640  # SD para la cuadrícula
+            calidad_jpeg = 60
+
+        nuevo_alto = int((nuevo_ancho / ancho) * alto)
+        frame_web = cv2.resize(frame, (nuevo_ancho, nuevo_alto))
+
+        opciones_jpeg = [int(cv2.IMWRITE_JPEG_QUALITY), calidad_jpeg]
+        ret, buffer = cv2.imencode('.jpg', frame_web, opciones_jpeg)
         
+        frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
         
-        time.sleep(0.03) # Límite de 30 FPS web
+        time.sleep(0.03)
 
+# CAMBIO 3: Rutas de Flask actualizadas
 @app.route('/')
 def index():
-    # Enviamos la configuración actual a la página
-    return render_template('index.html', conf=estado.config_ram)
+    # Enviamos los nombres de las cámaras al HTML
+    nombres_camaras = list(config.CAMERA_INDEXES.keys())
+    return render_template('index.html', camaras=nombres_camaras)
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+# Actualizamos la ruta para que lea si pedimos HD
+@app.route('/video_feed/<cam_name>')
+def video_feed(cam_name):
+    # Si la URL trae "?hq=true", activamos la alta calidad
+    es_alta_calidad = request.args.get('hq') == 'true'
+    return Response(generar_frames(cam_name, es_alta_calidad), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/update_config', methods=['POST'])
 def update_config():
