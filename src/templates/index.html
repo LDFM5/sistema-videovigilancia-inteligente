@@ -86,50 +86,59 @@
         {% for cam in camaras %}
         <div class="cam-card" onclick="toggleFocus(this)">
             <h3>🎥 {{ cam }}</h3>
-            <img data-cam="{{ cam }}" src="{{ url_for('video_feed', cam_name=cam) }}" alt="Feed de {{ cam }}">
+            <iframe 
+                data-cam="{{ cam }}"
+                frameborder="0" 
+                scrolling="no" 
+                style="width: 100%; height: 360px; border-radius: 6px; pointer-events: none;">
+            </iframe>
         </div>
         {% endfor %}
     </div>
 
     <script>
+        // 1. INICIALIZAR CÁMARAS CON LA IP REAL DE LA RED
+        const ipServidor = window.location.hostname; // Detecta si es localhost o 192.168.x.x
+        document.querySelectorAll('.cam-card iframe').forEach(ifr => {
+            let camName = ifr.getAttribute('data-cam');
+            let urlBase = `http://${ipServidor}:8889/${camName}/`;
+            ifr.dataset.baseurl = urlBase;
+            ifr.src = urlBase; // Arranca el video
+        });
+
+        // 2. LÓGICA DE ENFOQUE Y RECONEXIÓN
         function toggleFocus(element) {
-            let imgSeleccionada = element.querySelector('img');
-            let nombreCamara = imgSeleccionada.getAttribute('data-cam');
             let todasLasTarjetas = document.querySelectorAll('.cam-card');
 
             if (!element.classList.contains('focus-mode')) {
-                // ==========================
-                // 1. ENTRAR EN MODO ENFOQUE
-                // ==========================
+                // ENTRAR A MODO ENFOQUE
                 element.classList.add('focus-mode');
                 document.body.classList.add('has-focus');
-                element.querySelector('h3').innerHTML += " <span style='color:red; font-size:0.9rem;'>(Clic para cerrar)</span>";
+                element.querySelector('h3').innerHTML += " <span class='txt-cerrar' style='color:red; font-size:0.9rem;'>(Clic para cerrar)</span>";
 
-                // Subir la calidad de la cámara seleccionada
-                imgSeleccionada.src = `/video_feed/${nombreCamara}?hq=true`;
-
-                // Apagar (cortar transmisión) de las demás cámaras para liberar la red
+                // Apagar las demás cámaras
                 todasLasTarjetas.forEach(tarjeta => {
                     if (tarjeta !== element) {
-                        tarjeta.querySelector('img').src = ""; 
+                        tarjeta.querySelector('iframe').src = ""; 
                     }
                 });
 
             } else {
-                // ==========================
-                // 2. SALIR DEL MODO ENFOQUE
-                // ==========================
+                // SALIR DEL MODO ENFOQUE
                 element.classList.remove('focus-mode');
                 document.body.classList.remove('has-focus');
-                
-                let title = element.querySelector('h3');
-                title.innerHTML = "🎥 " + title.innerText.replace(" (Clic para cerrar)", "").replace("🎥 ", "");
+                let txtCerrar = element.querySelector('.txt-cerrar');
+                if (txtCerrar) txtCerrar.remove();
 
-                // Restaurar TODAS las cámaras a calidad estándar
+                // Encender las demás cámaras forzando recarga (Cache-Busting)
+                let tiempoActual = new Date().getTime();
                 todasLasTarjetas.forEach(tarjeta => {
-                    let img = tarjeta.querySelector('img');
-                    let camName = img.getAttribute('data-cam');
-                    img.src = `/video_feed/${camName}`;
+                    let ifr = tarjeta.querySelector('iframe');
+                    // Solo recargamos las que estaban apagadas
+                    if (ifr.src === "" || ifr.src.endsWith('blank') || ifr.src === window.location.href) {
+                        // Le agregamos ?t=12345 a la URL. El navegador cree que es una página nueva y reinicia WebRTC.
+                        ifr.src = ifr.dataset.baseurl + "?t=" + tiempoActual; 
+                    }
                 });
             }
         }

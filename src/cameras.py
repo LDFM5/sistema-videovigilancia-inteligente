@@ -38,6 +38,8 @@ def initialize_cameras():
 
         cap = cv2.VideoCapture(cam_index)
 
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
         if not cap.isOpened():
             print(f"❌ No se pudo abrir la cámara: {cam_name}")
             continue

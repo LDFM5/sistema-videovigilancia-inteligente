@@ -30,6 +30,7 @@ from detection import load_weapon_model, detect_weapons, load_pose_model, detect
 from temporal_logic import initialize_windows, update_window
 from recorder import initialize_recording_state, handle_recording
 from alerts import send_alert
+from streamer import RTSPStreamer
 
 
 def ejecutar_sistema_principal(shared_state):
@@ -90,6 +91,27 @@ def ejecutar_sistema_principal(shared_state):
 
     # Registramos la función para que Python la ejecute justo antes de cerrarse
     atexit.register(limpieza_segura)
+
+    # ==================================================
+    # INICIALIZAR STREAMERS RTSP
+    # ==================================================
+    streamers = {}
+    for cam_name in cameras:
+        # 1. Obtener la resolución real de esta cámara
+        w, h = camera_resolutions[cam_name]
+        
+        # 2. Definir un ancho estándar optimizado para la web
+        target_w = 800 
+        
+        # 3. Calcular la altura para mantener la proporción exacta (ej. 16:9)
+        target_h = int((target_w / w) * h)
+        
+        # 4. FFmpeg exige que las dimensiones sean números pares, si no, crashea.
+        if target_h % 2 != 0:
+            target_h += 1
+            
+        # Mandamos 15 FPS para que no pida más de lo que la IA puede darle (reduce el lag)
+        streamers[cam_name] = RTSPStreamer(cam_name, width=target_w, height=target_h, fps=15)
     
     # =========================
     # LOOP PRINCIPAL
@@ -101,9 +123,6 @@ def ejecutar_sistema_principal(shared_state):
 
         if not frames:
             break
-
-        # Diccionario para guardar los frames finales de esta vuelta
-        frames_procesados_web = {}
 
         for cam_name, frame in frames.items():
             
@@ -166,20 +185,13 @@ def ejecutar_sistema_principal(shared_state):
                 config.POST_BUFFER_SECONDS, alert_triggered, amenaza_presente
             )
 
-            # Guardamos el frame final de ESTA cámara en nuestro diccionario temporal
-            frames_procesados_web[cam_name] = frame.copy()
+            # ENVIAR AL SERVIDOR RTSP
+            streamers[cam_name].enviar_frame(frame)
 
-        # ==========================================
-        # GUARDAR EN LA RAM PARA FLASK
-        # ==========================================
+        # Guardamos la configuración
         with shared_state.lock:
-            # Sincronizamos configuraciones
             config.UMBRAL_VELOCIDAD_GOLPE = shared_state.config_ram["UMBRAL_VELOCIDAD_GOLPE"]
             config.UMBRAL_VELOCIDAD_CAIDA = shared_state.config_ram["UMBRAL_VELOCIDAD_CAIDA"]
-            
-            # ¡IMPORTANTE!: Actualizamos el diccionario completo
-            # shared_state.frames ahora contiene los frames de todas las cámaras
-            shared_state.frames = frames_procesados_web
 
 # Esto evita que el código corra solo al ser importado por Flask
 if __name__ == "__main__":
