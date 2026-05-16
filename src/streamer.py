@@ -1,61 +1,208 @@
 """
 streamer.py
 
-Módulo de transmisión de video a nivel industrial.
-Utiliza FFmpeg para comprimir frames crudos de OpenCV a H.264 
-y los inyecta en un servidor RTSP (MediaMTX).
+Streamer RTSP robusto y optimizado para baja latencia.
+Compatible con MediaMTX + WebRTC.
 """
+
 import subprocess
 import cv2
+import threading
+import queue
+import time
+
 
 class RTSPStreamer:
+
     def __init__(self, cam_name, width=640, height=480, fps=15):
+
         self.cam_name = cam_name
         self.width = width
         self.height = height
-        
-        # URL donde escucha MediaMTX por defecto
+        self.fps = fps
+
         self.rtsp_url = f"rtsp://localhost:8554/{cam_name}"
-        
-        print(f"📡 Iniciando pipeline RTSP para {cam_name} -> {self.rtsp_url}")
-        
-        # Comando mágico de FFmpeg: Toma video crudo (raw), lo comprime a H264 sin latencia (zerolatency)
-        # Comando mágico de FFmpeg adaptado 100% para WebRTC en navegadores
-        # Comando mágico de FFmpeg para WebRTC
+
+        print(f"📡 Inicializando RTSP -> {self.rtsp_url}")
+
+        # ======================================================
+        # QUEUE DE SOLO 1 FRAME
+        # ======================================================
+        self.frame_queue = queue.Queue(maxsize=1)
+
+        self.running = True
+
+        # ======================================================
+        # COMANDO FFMPEG
+        # ======================================================
         command = [
+
             'ffmpeg',
-            '-y', 
+
+            # ==========================================
+            # INPUT
+            # ==========================================
             '-f', 'rawvideo',
+
             '-vcodec', 'rawvideo',
+
             '-pix_fmt', 'bgr24',
-            '-s', f"{width}x{height}",
-            # '-r', str(fps),  <-- ELIMINAMOS ESTA LÍNEA para que no fuerce los FPS de entrada
+
+            '-s', f'{width}x{height}',
+
+            '-r', str(fps),
+
             '-i', '-',
-            
-            # --- CONFIGURACIÓN DE SALIDA ---
+
+            # ==========================================
+            # OUTPUT
+            # ==========================================
+            '-an',
+
             '-c:v', 'libx264',
+
             '-preset', 'ultrafast',
+
             '-tune', 'zerolatency',
+
             '-pix_fmt', 'yuv420p',
+
             '-profile:v', 'baseline',
-            '-rtsp_transport', 'tcp',
-            '-g', '30', # Forzamos un fotograma clave cada 30 frames para limpiar tirones
-            
+
+            '-g', '10',
+
             '-f', 'rtsp',
+
+            '-rtsp_transport', 'tcp',
+
             self.rtsp_url
         ]
-        
-        # Ocultamos la salida de FFmpeg para no ensuciar la consola
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
+        # ======================================================
+        # LANZAR FFMPEG
+        # ======================================================
+        self.process = subprocess.Popen(
+
+            command,
+
+            stdin=subprocess.PIPE,
+
+            stderr=subprocess.PIPE
+        )
+
+        # ======================================================
+        # THREAD STREAMING
+        # ======================================================
+        self.thread = threading.Thread(
+            target=self._stream_loop,
+            daemon=True,
+            name=f"Streamer-{cam_name}"
+        )
+
+        self.thread.start()
+
+    # ==========================================================
+    # LOOP STREAMING
+    # ==========================================================
+    def _stream_loop(self):
+
+        while self.running:
+
+            try:
+
+                frame = self.frame_queue.get(timeout=0.1)
+
+            except queue.Empty:
+                continue
+
+            try:
+
+                self.process.stdin.write(
+                    frame.tobytes()
+                )
+
+            except Exception as e:
+
+                print(f"❌ FFmpeg error ({self.cam_name}): {e}")
+
+                try:
+
+                    err = self.process.stderr.read().decode()
+
+                    print(err)
+
+                except:
+                    pass
+
+                break
+
+    # ==========================================================
+    # ENVIAR FRAME
+    # ==========================================================
     def enviar_frame(self, frame):
-        try:
-            # Aseguramos que el frame tenga el tamaño exacto que FFmpeg espera
-            frame_resized = cv2.resize(frame, (self.width, self.height))
-            self.process.stdin.write(frame_resized.tobytes())
-        except Exception as e:
-            print(f"❌ Error inyectando frame RTSP ({self.cam_name}): {e}")
 
+        if not self.running:
+            return
+
+        # ==========================================
+        # RESIZE
+        # ==========================================
+        frame = cv2.resize(
+            frame,
+            (self.width, self.height)
+        )
+
+        # ==========================================
+        # ELIMINAR FRAME VIEJO
+        # ==========================================
+        try:
+
+            if self.frame_queue.full():
+
+                self.frame_queue.get_nowait()
+
+        except:
+            pass
+
+        # ==========================================
+        # AGREGAR FRAME NUEVO
+        # ==========================================
+        try:
+
+            self.frame_queue.put_nowait(frame)
+
+        except:
+            pass
+
+    # ==========================================================
+    # CERRAR
+    # ==========================================================
     def cerrar(self):
-        self.process.stdin.close()
-        self.process.wait()
+
+        print(f"🛑 Cerrando stream -> {self.cam_name}")
+
+        self.running = False
+
+        time.sleep(0.2)
+
+        try:
+
+            if self.process.stdin:
+                self.process.stdin.close()
+
+        except:
+            pass
+
+        try:
+
+            self.process.kill()
+
+        except:
+            pass
+
+        try:
+
+            self.process.wait(timeout=1)
+
+        except:
+            pass

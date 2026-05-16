@@ -1,34 +1,133 @@
 """
 cameras.py
 
-Módulo responsable de la gestión de cámaras.
-
-Funciones principales:
-- Inicializar cámaras definidas en la configuración.
-- Obtener resolución y FPS reales por cámara.
-- Leer frames en cada iteración del sistema.
-
-Permite soportar múltiples cámaras de forma independiente y
-mantener el sistema robusto ante desconexiones o errores de captura.
+Sistema de captura optimizado:
+- Captura continua por thread
+- Latest-frame-only
+- Baja latencia
+- Evita buffering acumulado
 """
 
 import cv2
+import threading
+import time
+
 from config import CAMERA_INDEXES
 
 
-# =========================
-# INICIALIZAR CÁMARAS
-# =========================
+# ==========================================================
+# CLASE DE CÁMARA
+# ==========================================================
+class CameraStream:
 
+    def __init__(self, cam_name, cam_index):
+
+        self.cam_name = cam_name
+        self.cam_index = cam_index
+
+        self.cap = cv2.VideoCapture(cam_index)
+
+        # ==========================================
+        # CONFIGURACIÓN OPTIMIZADA
+        # ==========================================
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        # Resolución razonable para tiempo real
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+
+        # FPS
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+
+        if not self.cap.isOpened():
+
+            raise RuntimeError(
+                f"❌ No se pudo abrir cámara: {cam_name}"
+            )
+
+        # ==========================================
+        # INFO REAL
+        # ==========================================
+        self.width = int(
+            self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        )
+
+        self.height = int(
+            self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        )
+
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+
+        if self.fps <= 1:
+            self.fps = 30
+
+        print(f"📷 {cam_name}: {self.width}x{self.height}")
+        print(f"🎥 FPS: {self.fps}")
+
+        # ==========================================
+        # FRAME COMPARTIDO
+        # ==========================================
+        self.latest_frame = None
+
+        self.lock = threading.Lock()
+
+        self.running = True
+
+        # ==========================================
+        # THREAD INTERNO
+        # ==========================================
+        self.thread = threading.Thread(
+            target=self._capture_loop,
+            daemon=True,
+            name=f"CameraThread-{cam_name}"
+        )
+
+        self.thread.start()
+
+    # ======================================================
+    # LOOP DE CAPTURA
+    # ======================================================
+    def _capture_loop(self):
+
+        while self.running:
+
+            ret, frame = self.cap.read()
+
+            if not ret:
+                time.sleep(0.01)
+                continue
+
+            with self.lock:
+                self.latest_frame = frame
+
+    # ======================================================
+    # OBTENER ÚLTIMO FRAME
+    # ======================================================
+    def read(self):
+
+        with self.lock:
+
+            if self.latest_frame is None:
+                return False, None
+
+            return True, self.latest_frame.copy()
+
+    # ======================================================
+    # LIBERAR
+    # ======================================================
+    def release(self):
+
+        self.running = False
+
+        time.sleep(0.2)
+
+        self.cap.release()
+
+
+# ==========================================================
+# INICIALIZAR CÁMARAS
+# ==========================================================
 def initialize_cameras():
-    """
-    Inicializa todas las cámaras definidas en config.
-    
-    Retorna:
-        cameras (dict)
-        camera_resolutions (dict)
-        camera_fps (dict)
-    """
 
     cameras = {}
     camera_resolutions = {}
@@ -36,60 +135,24 @@ def initialize_cameras():
 
     for cam_name, cam_index in CAMERA_INDEXES.items():
 
-        cap = cv2.VideoCapture(cam_index)
+        try:
 
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cam = CameraStream(
+                cam_name,
+                cam_index
+            )
 
-        if not cap.isOpened():
-            print(f"❌ No se pudo abrir la cámara: {cam_name}")
-            continue
+            cameras[cam_name] = cam
 
-        # ==================================================
-        # NUEVO: Forzar resolución panorámica (Alta calidad)
-        # ==================================================
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 10000)   # Ancho deseado
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 10000)   # Alto deseado
-        # ==================================================
+            camera_resolutions[cam_name] = (
+                cam.width,
+                cam.height
+            )
 
-        cameras[cam_name] = cap
+            camera_fps[cam_name] = cam.fps
 
-        # Obtener la resolución REAL que la cámara aceptó darnos
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        camera_resolutions[cam_name] = (width, height)
+        except Exception as e:
 
-        # FPS real
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 1:  # algunas cámaras reportan 0 o 1
-            fps = 30
-
-        camera_fps[cam_name] = fps
-
-        print(f"📷 {cam_name} resolución: {width}x{height}")
-        print(f"🎥 {cam_name} FPS: {fps}")
+            print(e)
 
     return cameras, camera_resolutions, camera_fps
-
-
-# =========================
-# LEER FRAMES
-# =========================
-
-def read_frames(cameras):
-    """
-    Lee un frame de cada cámara activa.
-
-    Retorna:
-        frames (dict) con {nombre_camara: frame}
-    """
-
-    frames = {}
-
-    for cam_name, cap in cameras.items():
-        ret, frame = cap.read()
-        if ret:
-            frames[cam_name] = frame
-        else:
-            print(f"⚠️ No se pudo leer frame de {cam_name}")
-
-    return frames
