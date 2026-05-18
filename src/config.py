@@ -32,15 +32,7 @@ MODO_DEBUG = True
 # =========================
 # Pon en 'False' el que no necesites para ahorrar RAM y CPU
 ACTIVAR_MODELO_ARMAS = True
-ACTIVAR_MODELO_COMPORTAMIENTO = False
-
-# =========================
-# CONTROL DE COMPORTAMIENTOS ESPECÍFICOS (YOLO Pose)
-# =========================
-# Pon en 'False' el que quieras ignorar
-DETECTAR_ASALTO = True
-DETECTAR_GOLPE = False
-DETECTAR_CAIDA = False
+ACTIVAR_MODELO_COMPORTAMIENTO = True
 
 # =========================
 # RUTAS BASE
@@ -56,8 +48,9 @@ EVIDENCE_DIR = os.path.join(BASE_DIR, "evidences")
 os.makedirs(EVIDENCE_DIR, exist_ok=True)
 
 # Ruta del modelo entrenado
-MODEL_PATH = os.path.join(MODELS_DIR, "test_modelo_armas.pt")
-POSE_MODEL_PATH = os.path.join(MODELS_DIR, "yolov8n-pose.pt")
+WEAPON_MODEL_PATH = os.path.join(MODELS_DIR, "Modelo_objetos_sospechosos.pt")
+POSE_MODEL_PATH = os.path.join(MODELS_DIR, "yolo11n-pose.pt")
+BEHAVIOR_MODEL_PATH = os.path.join(MODELS_DIR, "behavior_gru.pth")
 
 
 # =========================
@@ -73,13 +66,6 @@ CONF_WEAPON = 0.5   # Umbral de confianza mínimo
 WINDOW_SECONDS = 1.5          
 ACTIVATION_THRESHOLD = 15     
 
-BEHAVIOR_WINDOW_SECONDS = 4.0      
-BEHAVIOR_ACTIVATION_THRESHOLD = 30 # Requiere ~2.5 seg para asaltos
-
-# Umbral ultra rápido para eventos impulsivos (Golpes)
-GOLPE_ACTIVATION_THRESHOLD = 2     # Con solo 2 frames de movimiento brusco, dispara
-
-
 # =========================
 # GRABACIÓN
 # =========================
@@ -94,7 +80,7 @@ RECORDING_FPS = 15
 
 CAMERA_INDEXES = {
     "webcam": 0,
-    #"phone": 1,
+    "phone": 1,
     #"usb": 2
 }
 
@@ -102,17 +88,6 @@ CAMERA_INDEXES = {
 # CLASES DE DETECCIÓN DE ARMAS
 # =========================
 CLASES_ARMAS_ALERTA = ["firearm", "melee_weapon"]
-
-# =========================
-# COMPORTAMIENTOS
-# =========================
-# Velocidad de golpe: Cuántas veces la longitud de su propio torso 
-# recorrería la mano en 1 segundo si mantuviera esa velocidad.
-UMBRAL_VELOCIDAD_GOLPE = 10.0
-
-# Velocidad a la que los hombros deben "desplomarse" hacia el piso.
-# Un valor de 2.0 o 2.5 suele ser perfecto para ignorar a alguien sentándose rápido.
-UMBRAL_VELOCIDAD_CAIDA = 2.0
 
 # =========================
 # TELEGRAM

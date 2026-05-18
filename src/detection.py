@@ -1,281 +1,98 @@
 """
 detection.py
 
-Módulo encargado de la detección de armas utilizando un modelo YOLO entrenado.
+Módulo optimizado para inferencia en tiempo real y arquitectura Edge AI.
 
-Funciones principales:
-- Cargar el modelo de detección.
-- Ejecutar inferencia sobre cada frame.
-- Dibujar bounding boxes y etiquetas.
-- Indicar si se detectó un arma en el frame actual.
+Responsabilidades:
+- Ejecutar inferencia por lotes (batching) usando modelos YOLO proporcionados.
+- Filtrar clases de interés (armas).
+- Extraer keypoints y dibujar anotaciones.
 
-Este módulo no toma decisiones de alerta ni maneja grabación;
-su responsabilidad es exclusivamente la detección.
+Nota Arquitectónica: 
+Este módulo ya NO calcula lógicas biométricas espaciales. Únicamente retorna 
+los tensores puros de pose (skeletons_data) para ser inyectados en un clasificador 
+secundario de Machine Learning (MLP/GCN).
 """
 import cv2
-from ultralytics import YOLO
-import config
-import math
-import time
-
-# Diccionario de posiciones
-estado_postura = {}
-
-# Memoria para mantener el texto en pantalla
-tiempo_ultimo_golpe = 0
-tiempo_ultima_caida = 0
 
 # =========================
-# FUNCIONES AUXILIARES
+# DETECCIÓN DE ARMAS
 # =========================
-def obtener_longitud_torso(kp):
-    """Calcula la distancia entre el centro de los hombros y el centro de las caderas."""
-    # Hombros: 5 (izq), 6 (der) | Caderas: 11 (izq), 12 (der)
-    if len(kp) >= 13 and kp[5][1] > 0 and kp[6][1] > 0 and kp[11][1] > 0 and kp[12][1] > 0:
-        centro_hombros_x = (kp[5][0] + kp[6][0]) / 2
-        centro_hombros_y = (kp[5][1] + kp[6][1]) / 2
-        centro_caderas_x = (kp[11][0] + kp[12][0]) / 2
-        centro_caderas_y = (kp[11][1] + kp[12][1]) / 2
+
+def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_debug=False):
+    """
+    Procesa múltiples frames al mismo tiempo (Batching) para detección de armas.
+    
+    Args:
+        model: Instancia del modelo YOLO cargada en memoria.
+        frames_list (list): Lista de frames crudos de OpenCV.
+        conf (float): Umbral de confianza.
+        clases_alerta (list): Nombres de las clases a detectar.
+        modo_debug (bool): Si es True, ignora el filtro y dibuja todo.
         
-        return math.hypot(centro_hombros_x - centro_caderas_x, centro_hombros_y - centro_caderas_y)
-    return None
-
-
-# =========================
-# CARGAR MODELO
-# =========================
-
-def load_weapon_model():
+    Returns:
+        list: Resultados de la inferencia por cada frame.
     """
-    Carga el modelo de armas desde la ruta definida en config.
-    """
-    model = YOLO(config.MODEL_PATH)
-    print("✅ Modelo de armas cargado correctamente.")
-    return model
-
-def load_pose_model():
-    """
-    Carga el modelo de estimación de postura.
-    """
-    model = YOLO(config.POSE_MODEL_PATH)
-    print("✅ Modelo de Pose cargado correctamente.")
-    return model
-
-# =========================
-# DETECCIÓN DE ARMA
-# =========================
-
-def detect_weapons(model, frame, conf_threshold):
-    """
-    Ejecuta detección de armas sobre un frame.
-    En MODO_DEBUG dibuja todo lo que reconoce, pero solo activa alertas para armas reales.
-    """
+    if not frames_list:
+        return []
+        
     # 1. Obtener los IDs numéricos de las armas reales (firearm, melee_weapon)
-    ids_armas = [id_clase for id_clase, nombre in model.names.items() if nombre in config.CLASES_ARMAS_ALERTA]
+    ids_armas = []
+    if clases_alerta:
+        ids_armas = [id_clase for id_clase, nombre in model.names.items() if nombre in clases_alerta]
 
-    # 2. MAGIA DEL FILTRO: 
-    # Si MODO_DEBUG es True, pasamos None (detectar todo). 
-    # Si es False, pasamos solo los IDs de las armas.
-    filtro_clases = None if config.MODO_DEBUG else (ids_armas if ids_armas else None)
+    # 2. Si MODO_DEBUG es True, YOLO detecta todo (None). Si es False, filtra solo armas.
+    filtro_clases = None if modo_debug else (ids_armas if ids_armas else None)
 
-    # 3. YOLO predice usando el filtro seleccionado
-    results = model.predict(
-        frame,
-        conf=conf_threshold,
-        classes=filtro_clases,
-        verbose=False
-    )
+    results = model(frames_list, conf=conf, classes=filtro_clases, verbose=False)
+    
+    # 3. MAGIA DEL FILTRO DE ALERTAS
+    # Revisamos frame por frame si entre todo lo que encontró, hay un arma real
+    alertas_por_frame = []
+    for r in results:
+        tiene_arma_real = False
+        if r.boxes is not None:
+            for cls_id in r.boxes.cls:
+                if int(cls_id) in ids_armas:
+                    tiene_arma_real = True
+                    break  # Con un arma es suficiente para la alerta
+        alertas_por_frame.append(tiene_arma_real)
+            
+    return results, alertas_por_frame
 
-    weapon_detected = False
-
-    # 4. Si detectó algo en la imagen
-    if len(results) > 0 and len(results[0].boxes) > 0:
-        
-        # Debemos revisar si entre lo que encontró hay un arma real
-        for box in results[0].boxes:
-            if int(box.cls[0]) in ids_armas:
-                weapon_detected = True
-                break # Con un arma que encontremos es suficiente para dar la alerta
-        
-        # YOLO dibuja automáticamente los cuadros sobre la imagen
-        frame = results[0].plot()
-
-    return weapon_detected, frame
 
 # =========================
-# DETECCIÓN DE POSE Y COMPORTAMIENTO
+# EXTRACCIÓN DE POSE 
 # =========================
-# (Mantén tus importaciones y la función obtener_longitud_torso igual)
 
-def detect_pose(model, frame, conf_threshold=0.5):
-    global tiempo_ultimo_golpe, tiempo_ultima_caida
+def batch_detect_pose(model, frames_list, conf=0.5):
+    """
+    Procesa esqueletos en lote. Retorna los resultados visuales y los datos crudos (Keypoints)
+    preparados para inyectarse en un futuro modelo clasificador (MLP/ST-GCN).
     
-    results = model.track(frame, conf=conf_threshold, persist=True, tracker="bytetrack.yaml", verbose=False)
-
-    asalto_detectado = False
-    golpe_detectado = False
-    caida_detectada = False
-
-    if len(results[0].boxes) > 0 and results[0].boxes.id is not None:
-        frame = results[0].plot() 
-        keypoints_personas = results[0].keypoints.xy 
-        ids_personas = results[0].boxes.id.int().cpu().tolist() 
+    Args:
+        model: Instancia del modelo YOLO Pose cargada en memoria.
+        frames_list (list): Lista de frames crudos de OpenCV.
+        conf (float): Umbral de confianza.
         
-        ids_activos_este_frame = []
-
-        for persona_kp, track_id in zip(keypoints_personas, ids_personas):
-            ids_activos_este_frame.append(track_id)
+    Returns:
+        tuple: (Resultados visuales, Lista de tensores de skeletons_data)
+    """
+    if not frames_list:
+        return [], []
+        
+    results = model.track(frames_list, conf=conf, persist=True, tracker="bytetrack.yaml", verbose=False)
+    
+    skeletons_data = []
+    
+    for r in results:
+        # Extraemos la matriz matemática del esqueleto (X, Y, Confianza)
+        # Nos aseguramos de que keypoints exista y tenga datos (personas detectadas)
+        if hasattr(r, 'keypoints') and r.keypoints is not None and r.keypoints.data.shape[1] > 0:
+            # .cpu().numpy() convierte de tensor de PyTorch a array de Numpy
+            # listo para ser alimentado a un clasificador scikit-learn/TensorFlow
+            skeletons_data.append(r.keypoints.data.cpu().numpy())
+        else:
+            skeletons_data.append(None)
             
-            largo_torso = obtener_longitud_torso(persona_kp)
-            
-            if largo_torso is None or largo_torso < 10:
-                if persona_kp[5][1] > 0 and persona_kp[6][1] > 0:
-                    largo_torso = math.hypot(persona_kp[5][0] - persona_kp[6][0], persona_kp[5][1] - persona_kp[6][1]) * 1.5
-                else:
-                    largo_torso = 100 
-
-            if track_id not in estado_postura:
-                estado_postura[track_id] = {
-                    "muneca_der_ant": None, 
-                    "muneca_izq_ant": None,
-                    "hombros_y_ant": None,
-                    "tiempo_ant": time.time() 
-                }
-
-            if len(persona_kp) >= 11:
-                x_muneca_izq = float(persona_kp[9][0])
-                y_muneca_izq = float(persona_kp[9][1])
-                x_muneca_der = float(persona_kp[10][0])
-                y_muneca_der = float(persona_kp[10][1])
-                y_ojo_izq = float(persona_kp[1][1])
-                y_ojo_der = float(persona_kp[2][1])
-
-                # ==========================================
-                # 1. VALIDACIÓN INDEPENDIENTE DE VISIBILIDAD
-                # ==========================================
-                # YOLO envía (0,0) si no ve la parte del cuerpo
-                izq_visible = (x_muneca_izq > 0 and y_muneca_izq > 0)
-                der_visible = (x_muneca_der > 0 and y_muneca_der > 0)
-
-                # ==========================================
-                # REGLA 1: MANOS ARRIBA (Requiere ambas visibles por seguridad)
-                # ==========================================
-                if izq_visible and der_visible and y_ojo_izq > 0 and y_ojo_der > 0:
-                    if y_muneca_izq < y_ojo_izq and y_muneca_der < y_ojo_der:
-                        asalto_detectado = True
-
-                # ==========================================
-                # REGLA 2: GOLPE / MOVIMIENTO BRUSCO
-                # ==========================================
-                memoria = estado_postura[track_id]
-                tiempo_actual = time.time()
-                delta_t = tiempo_actual - memoria["tiempo_ant"]  
-
-                # Extraer punto central de los hombros (eje Y)
-                hombros_y = -1
-                if persona_kp[5][1] > 0 and persona_kp[6][1] > 0:
-                    hombros_y = (float(persona_kp[5][1]) + float(persona_kp[6][1])) / 2.0
-
-                # ==========================================
-                # REGLA 3: CAÍDA AL PISO (Desplome vertical)
-                # ==========================================
-                memoria = estado_postura[track_id]
-                tiempo_actual = time.time()
-                delta_t = tiempo_actual - memoria["tiempo_ant"]
-
-                if delta_t > 0.02: 
-                    # Filtro de ruido
-                    distancia_minima_ruido = largo_torso * 0.10
-
-                    # FILTRO ANTI-RUIDO: Ignorar vibraciones menores al 10% del torso
-                    distancia_minima_ruido = largo_torso * 0.10
-
-                    # --- EVALUAR MUÑECA DERECHA ---
-                    if der_visible and memoria["muneca_der_ant"] is not None:
-                        d_der = math.hypot(x_muneca_der - memoria["muneca_der_ant"][0], y_muneca_der - memoria["muneca_der_ant"][1])
-                        
-                        if d_der > distancia_minima_ruido: # Si superó el ruido, calculamos velocidad
-                            vel_der = (d_der / delta_t) / largo_torso
-                            if vel_der > config.UMBRAL_VELOCIDAD_GOLPE:
-                                golpe_detectado = True
-                                tiempo_ultimo_golpe = tiempo_actual
-
-                    # --- EVALUAR MUÑECA IZQUIERDA ---
-                    if izq_visible and memoria["muneca_izq_ant"] is not None:
-                        d_izq = math.hypot(x_muneca_izq - memoria["muneca_izq_ant"][0], y_muneca_izq - memoria["muneca_izq_ant"][1])
-                        
-                        if d_izq > distancia_minima_ruido: # Si superó el ruido, calculamos velocidad
-                            vel_izq = (d_izq / delta_t) / largo_torso
-                            if vel_izq > config.UMBRAL_VELOCIDAD_GOLPE:
-                                golpe_detectado = True
-                                tiempo_ultimo_golpe = tiempo_actual
-
-                    # --- EVALUAR CAÍDA ---
-                    if hombros_y > 0 and memoria["hombros_y_ant"] is not None:
-                        # Calculamos cuánto bajaron los hombros en Y
-                        # Nota: En OpenCV, la "Y" crece hacia abajo. Si la Y actual es MAYOR, la persona bajó.
-                        delta_y_hombros = hombros_y - memoria["hombros_y_ant"]
-                        
-                        if delta_y_hombros > distancia_minima_ruido: # Solo evaluamos si bajó significativamente
-                            vel_caida = (delta_y_hombros / delta_t) / largo_torso
-                            if vel_caida > config.UMBRAL_VELOCIDAD_CAIDA:
-                                caida_detectada = True
-                                tiempo_ultima_caida = tiempo_actual
-
-                # ==========================================
-                # ACTUALIZACIÓN SEGURA DE MEMORIA
-                # ==========================================
-                # Si la mano desaparece, borramos su memoria. 
-                # Así evitamos que al reaparecer se marque como un movimiento a la velocidad de la luz.
-                if der_visible:
-                    estado_postura[track_id]["muneca_der_ant"] = (x_muneca_der, y_muneca_der)
-                else:
-                    estado_postura[track_id]["muneca_der_ant"] = None
-
-                if izq_visible:
-                    estado_postura[track_id]["muneca_izq_ant"] = (x_muneca_izq, y_muneca_izq)
-                else:
-                    estado_postura[track_id]["muneca_izq_ant"] = None
-                    
-                estado_postura[track_id]["tiempo_ant"] = tiempo_actual
-
-                # Actualizamos la memoria de los hombros
-                if hombros_y > 0:
-                    estado_postura[track_id]["hombros_y_ant"] = hombros_y
-                else:
-                    estado_postura[track_id]["hombros_y_ant"] = None
-                    
-                estado_postura[track_id]["tiempo_ant"] = tiempo_actual
-
-        # Limpieza
-        ids_a_borrar = [tid for tid in estado_postura if tid not in ids_activos_este_frame]
-        for tid in ids_a_borrar:
-            del estado_postura[tid]
-
-    
-    # ==================================================
-    # APLICAR LOS INTERRUPTORES DE CONFIG
-    # ==================================================
-    if not config.DETECTAR_ASALTO:
-        asalto_detectado = False
-        
-    if not config.DETECTAR_GOLPE:
-        golpe_detectado = False
-        
-    if not config.DETECTAR_CAIDA:
-        caida_detectada = False
-    
-    # Renderizado
-    # Renderizado de Textos
-    if asalto_detectado:
-        cv2.putText(frame, "ALERTA: MANOS ARRIBA", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
-
-    if time.time() - tiempo_ultimo_golpe < 1.5:
-        cv2.putText(frame, "ALERTA: GOLPE / EMPUJON", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3) 
-
-    # Texto de caída
-    if time.time() - tiempo_ultima_caida < 1.5:
-        cv2.putText(frame, "EMERGENCIA: CAIDA DETECTADA", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3) 
-
-    # IMPORTANTE: Ahora la función devuelve 3 amenazas
-    return asalto_detectado, golpe_detectado, caida_detectada, frame
+    return results, skeletons_data

@@ -16,11 +16,6 @@ class EstadoSistema:
 
         self.lock = threading.Lock()
 
-        self.config_ram = {
-            "UMBRAL_VELOCIDAD_GOLPE": 15.0,
-            "UMBRAL_VELOCIDAD_CAIDA": 20.0
-        }
-
 
 estado = EstadoSistema()
 
@@ -35,8 +30,6 @@ def index():
         camaras=nombres_camaras
     )
 
-
-@app.route('/update_config', methods=['POST'])
 def update_config():
 
     data = request.json
