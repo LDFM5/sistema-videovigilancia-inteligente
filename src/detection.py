@@ -13,7 +13,6 @@ Este módulo ya NO calcula lógicas biométricas espaciales. Únicamente retorna
 los tensores puros de pose (skeletons_data) para ser inyectados en un clasificador 
 secundario de Machine Learning (MLP/GCN).
 """
-import cv2
 
 # =========================
 # DETECCIÓN DE ARMAS

@@ -25,7 +25,7 @@ import os
 # True: Muestra TODAS las clases (celulares, etc.) en pantalla para pruebas. 
 #       (Nota: Las alertas/grabaciones seguirán disparándose SOLO con las armas reales).
 # False: MODO PRODUCCIÓN. Solo dibuja las armas en pantalla. Ignora lo demás.
-MODO_DEBUG = True
+MODO_DEBUG = False
 
 # =========================
 # CONTROL DE MÓDULOS DE IA (FEATURE FLAGS)
@@ -80,8 +80,8 @@ RECORDING_FPS = 15
 
 CAMERA_INDEXES = {
     "webcam": 0,
-    "phone": 1,
-    #"usb": 2
+    #"phone": 1,
+    #"usb": 1
 }
 
 # =========================

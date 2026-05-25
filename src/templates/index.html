@@ -1,282 +1,549 @@
 <!DOCTYPE html>
 <html lang="es">
-
 <head>
-
     <meta charset="UTF-8">
-
-    <title>Dashboard DAOCS</title>
-
+    <title>DAOCS | Control de Operaciones Edge AI</title>
     <style>
+        :root {
+            --bg-main: #0a0b0d;        
+            --panel-bg: #141619;       
+            --panel-border: #22262c;   
+            --accent: #4fc3f7;         
+            --accent-success: #00e676; 
+            --accent-alert: #ff1744;   
+            --text-main: #e3e6eb;      
+            --text-muted: #7a8594;     
+            --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #121212;
-            color: white;
-            margin: 0;
-            padding: 20px;
-        }
-
-        h1 {
-            text-align: center;
-            color: #00d2ff;
+            font-family: var(--font-ui);
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden; 
         }
 
         /* =========================================
-           GRID
+           HEADER SUPERIOR
         ========================================= */
+        header {
+            height: 50px;
+            background: var(--panel-bg);
+            border-bottom: 1px solid var(--panel-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 24px;
+            flex-shrink: 0;
+        }
+
+        .logo-area {
+            font-family: var(--font-mono);
+            font-weight: 800;
+            font-size: 1.2rem;
+            letter-spacing: 2px;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo-area::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: var(--accent-success);
+            border-radius: 50%;
+        }
+
+        .system-title {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        /* =========================================
+           CONTENEDOR CENTRAL (BOUNDED)
+        ========================================= */
+        #workspace {
+            display: flex;
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+        }
+
+        #main-content {
+            flex-grow: 1;
+            padding: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden; 
+        }
 
         .grid-camaras {
-
-            display: grid;
-
-            grid-template-columns:
-                repeat(auto-fit, minmax(400px, 1fr));
-
-            gap: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            height: 100%;
+            max-height: 100%;
         }
 
-        /* =========================================
-           TARJETAS
-        ========================================= */
-
+        /* Celdas del Grid: Solo controlan distribución de ancho, no fuerzan alto */
         .cam-card {
-
-            background: #1e1e1e;
-
-            border-radius: 10px;
-
+            background: #000000; 
+            border: 1px solid var(--panel-border);
+            border-radius: 4px;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            
+            flex: 1 1 45%; 
+            max-width: calc(50% - 12px); 
+            height: auto;
+            transition: border-color 0.2s ease;
+            position: relative;
+        }
 
-            cursor: pointer;
-
-            transition: all 0.25s ease;
-
-            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        .grid-camaras :has(> :nth-child(1):last-child) .cam-card {
+            max-width: 85%;
         }
 
         .cam-card:hover {
+            border-color: #3a444f;
+        }
 
-            transform: translateY(-3px);
+        .cam-header {
+            background: #111315; 
+            padding: 0 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--panel-border);
+            flex-shrink: 0;
+            height: 36px;
+            z-index: 2;
+        }
 
-            box-shadow:
-                0 8px 20px rgba(0, 210, 255, 0.25);
+        .cam-title-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            height: 100%;
         }
 
         .cam-title {
-
-            padding: 10px;
-
-            text-align: center;
-
-            font-size: 1.1rem;
-
-            background: #151515;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-main);
         }
 
-        /* =========================================
-           VIDEO
-        ========================================= */
-
-        video {
-
-            width: 100%;
-
-            height: auto;
-
-            display: block;
-
-            background: black;
-        }
-
-        /* =========================================
-        FOCUS MODE
-        ========================================= */
-
-        .cam-card.focus-mode {
-
-            position: fixed;
-
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-
-            width: 100vw;
-            height: 100vh;
-
-            background: rgba(0,0,0,0.96);
-
-            z-index: 9999;
-
+        .cam-controls-area {
             display: flex;
-            flex-direction: column;
-            justify-content: center;
             align-items: center;
-
-            border-radius: 0;
+            gap: 16px;
+            height: 100%;
         }
 
-        .cam-card.focus-mode iframe {
-
-            width: 95vw;
-            height: 90vh;
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            letter-spacing: 0.5px;
         }
 
-        /* Ocultar demás */
+        .status-beacon {
+            width: 6px;
+            height: 6px;
+            background: #2a2f35; 
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
 
-        body.has-focus .cam-card:not(.focus-mode) {
+        .cam-card.detecting { border-color: var(--accent-alert); }
+        .cam-card.detecting .status-beacon {
+            background: var(--accent-alert);
+            box-shadow: 0 0 10px var(--accent-alert);
+            animation: pulse 1s infinite alternate;
+        }
 
+        /* Botones de Control */
+        .btn-cam-action {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 1.1rem; 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.15s ease;
+            height: 36px;
+            padding: 0 4px;
+        }
+        .btn-cam-action:hover { color: var(--accent); }
+
+        .btn-cam-back {
             display: none;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 1.3rem;
+            align-items: center;
+            justify-content: center;
+            height: 36px;
+            transition: color 0.15s ease;
+            padding: 0 4px;
+        }
+        .btn-cam-back:hover { color: var(--accent); }
+
+        /* SOLUCIÓN AL GLITCH: El cálculo 16:9 se realiza exclusivamente en la caja contenedora del video */
+        .video-container {
+            width: 100%;
+            aspect-ratio: 16 / 9 !important; 
+            position: relative;
+            background: #000000;
+            overflow: hidden; 
+            flex-shrink: 0;
         }
 
-        body.has-focus h1 {
-
-            display: none;
+        iframe {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            border: none; display: block; background: #000000;
+            transform: none; 
         }
 
         /* =========================================
-           MÓVIL
+           MODO ENFOQUE / MAXIMIZADO
         ========================================= */
-
-        @media (max-width: 768px) {
-
-            .grid-camaras {
-
-                grid-template-columns: 1fr;
-            }
-
-            .focus-mode video {
-
-                width: 100vw;
-                height: auto;
-            }
+        .cam-card.focus-mode {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            z-index: 50;
+            border-radius: 0;
+            border: none;
+        }
+        
+        .cam-card.focus-mode .cam-header {
+            background: #0a0b0d;
+            border-bottom: 1px solid #1a1d22;
+            height: 40px;
         }
 
+        /* En pantalla completa permitimos que el contenedor llene el espacio libre del workspace */
+        .cam-card.focus-mode .video-container {
+            flex: 1;
+            aspect-ratio: auto !important; 
+        }
+
+        .cam-card.focus-mode .btn-cam-back { display: flex; }   
+        .cam-card.focus-mode .btn-cam-action { display: none; } 
+
+        body.has-focus #btn-config { display: none !important; }
+
+        /* =========================================
+           SIDEBAR CONFIGURACIÓN (PRESTACIONES ALTA VELOCIDAD)
+        ========================================= */
+        #btn-config {
+            background: var(--panel-bg); 
+            color: var(--text-main); 
+            border: 1px solid var(--panel-border);
+            border-radius: 4px; 
+            width: 36px; 
+            height: 36px; 
+            cursor: pointer;
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            transition: border-color 0.15s ease, color 0.15s ease;
+        }
+        #btn-config:hover { border-color: var(--accent); color: var(--accent); }
+
+        #sidebar {
+            position: fixed; 
+            right: 0; 
+            top: 50px; 
+            bottom: 0; 
+            width: 340px;
+            background: var(--panel-bg); 
+            border-left: 1px solid var(--panel-border);
+            padding: 24px; 
+            z-index: 100; 
+            
+            /* Movimiento asistido por hardware */
+            transform: translateX(100%); 
+            transition: transform 0.18s cubic-bezier(0.05, 0.7, 0.1, 1); 
+            
+            display: flex; 
+            flex-direction: column; 
+            gap: 24px;
+            
+            /* Sombra sutil optimizada que no genera carga de redibujado */
+            box-shadow: -5px 0 20px rgba(0, 0, 0, 0.6);
+            will-change: transform; 
+        }
+
+        #sidebar.open { 
+            transform: translateX(0); 
+        }
+
+        /* CORRECCIÓN DEFINITIVA AL LAG DEL SOMBREADO */
+        #sidebar-overlay {
+            position: fixed; 
+            top: 50px; 
+            left: 0; 
+            right: 0; 
+            bottom: 0; 
+            background: rgba(0, 0, 0, 0.5); /* Oscurecimiento puro y directo */
+            z-index: 99; 
+            
+            /* Eliminamos el backdrop-filter blur que ahogaba la GPU */
+            opacity: 0; 
+            pointer-events: none; 
+            
+            /* Forzado de renderizado 3D para transiciones instantáneas a 60 FPS */
+            transform: translateZ(0);
+            will-change: opacity;
+            transition: opacity 0.15s linear; 
+        }
+
+        #sidebar-overlay.open { 
+            opacity: 1; 
+            pointer-events: auto; 
+        }
+
+        .config-section { display: flex; flex-direction: column; gap: 12px; }
+        .config-section h3 {
+            font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;
+            color: var(--text-muted); border-bottom: 1px solid var(--panel-border); padding-bottom: 6px;
+        }
+
+        .control-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; gap: 10px; }
+        .input-number-precise {
+            background: #1a1d22; border: 1px solid var(--panel-border); color: var(--accent); font-family: var(--font-mono); font-size: 0.85rem;
+            font-weight: bold; width: 60px; padding: 4px 6px; text-align: center; border-radius: 4px; outline: none;
+        }
+        input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+        input[type="range"] { width: 100%; accent-color: var(--accent); background: #222; height: 4px; border-radius: 2px; outline: none; margin-top: 4px; }
+
+        .btn-panel {
+            width: 100%; padding: 10px; background: transparent; border: 1px solid var(--panel-border);
+            color: var(--text-main); font-family: var(--font-ui); font-size: 0.8rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; border-radius: 4px; transition: 0.2s;
+        }
+        .btn-panel.primary { background: var(--accent); color: #050505; border: none; }
+        .btn-panel.primary:hover { background: #3faad6; }
+
+        /* =========================================
+           PANEL INFERIOR
+        ========================================= */
+        #bottom-system {
+            height: 180px; background: #0e1013; border-top: 1px solid var(--panel-border);
+            display: flex; z-index: 10; transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1); width: 100%; flex-shrink: 0; 
+        }
+        #bottom-system.minimized { height: 40px; }
+        #live-alerts { width: 35%; border-right: 1px solid var(--panel-border); padding: 12px 16px; display: flex; flex-direction: column; overflow: hidden; }
+        #terminal-container { width: 65%; display: flex; flex-direction: column; padding: 12px 16px; overflow: hidden; }
+        .panel-title-bar { display: flex; justify-content: space-between; align-items: center; height: 20px; margin-bottom: 8px; }
+        .panel-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); font-weight: 700; }
+        .log-feed { flex: 1; overflow-y: auto; font-family: var(--font-mono); font-size: 0.75rem; line-height: 1.4; }
+        #bottom-system.minimized .log-feed { display: none; }
+
+        .log-line { color: #8a96a3; margin-bottom: 4px; white-space: nowrap; }
+        .log-line .timestamp { color: #47515c; margin-right: 8px; }
+        .log-line.success { color: var(--accent-success); }
+        .log-line.info { color: var(--accent); }
+
+        .alert-item {
+            background: rgba(255, 23, 68, 0.06); border-left: 3px solid var(--accent-alert);
+            padding: 6px 12px; font-size: 0.8rem; font-family: var(--font-mono);
+            display: flex; justify-content: space-between; align-items: center; border-radius: 0 4px 4px 0; margin-bottom: 6px;
+        }
+        .btn-toggle-sub { background: transparent; border: none; color: var(--text-muted); font-family: var(--font-mono); font-size: 0.75rem; cursor: pointer; padding: 2px 6px; }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 0.6; }
+            100% { transform: scale(1.15); opacity: 1; }
+        }
     </style>
-
 </head>
-
 <body>
 
-    <h1>Centro de Monitoreo Inteligente</h1>
+    <header>
+        <div class="logo-area">DAOCS</div>
+        <div class="system-title">Sistema Centralizado de Inferencia Core AI</div>
+        <button id="btn-config" onclick="toggleSidebar()" title="Configuración del Sistema">⚙️</button>
+    </header>
 
-    <div class="grid-camaras">
+    <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
 
-        {% for cam in camaras %}
-
-        <div class="cam-card"
-            onclick="toggleFocus(this)">
-
-            <h3>🎥 {{ cam }}</h3>
-
-            <iframe
-                data-cam="{{ cam }}"
-                loading="lazy"
-                allow="autoplay"
-                frameborder="0"
-                scrolling="no"
-                style="
-                    width:100%;
-                    height:360px;
-                    border-radius:6px;
-                    background:black;
-                    overflow:hidden;
-                ">
-            </iframe>
-
+    <div id="sidebar">
+        <div class="config-section">
+            <h3>Modelos Neuronal Espacial</h3>
+            <div class="control-row">
+                <span>Detección de Armamiento (YOLO)</span>
+                <input type="checkbox" id="cfg_armas" checked onchange="updateConfig()">
+            </div>
+            <div class="control-row">
+                <span>Análisis del Comportamiento (GRU)</span>
+                <input type="checkbox" id="cfg_comportamiento" checked onchange="updateConfig()">
+            </div>
         </div>
 
-        {% endfor %}
+        <div class="config-section">
+            <h3>Parámetros de Umbral</h3>
+            <div class="control-row">
+                <span>Confianza del Filtro</span>
+                <input type="number" id="num_confianza" class="input-number-precise" min="0.1" max="0.9" step="0.05" value="0.50" onchange="syncInput('cfg_confianza', this.value); updateConfig()">
+            </div>
+            <input type="range" id="cfg_confianza" min="0.1" max="0.9" step="0.05" value="0.5" oninput="syncInput('num_confianza', this.value); updateConfig()">
+        </div>
 
+        <div class="config-section">
+            <h3>Memoria Volátil (Buffers)</h3>
+            <div class="control-row">
+                <span>Pre-registro (Segundos)</span>
+                <input type="number" id="num_prebuffer" class="input-number-precise" min="1" max="10" step="1" value="3" onchange="syncInput('cfg_prebuffer', this.value); updateConfig()">
+            </div>
+            <input type="range" id="cfg_prebuffer" min="1" max="10" step="1" value="3" oninput="syncInput('num_prebuffer', this.value); updateConfig()">
+            
+            <div class="control-row">
+                <span>Post-registro (Segundos)</span>
+                <input type="number" id="num_postbuffer" class="input-number-precise" min="1" max="15" step="1" value="5" onchange="syncInput('cfg_postbuffer', this.value); updateConfig()">
+            </div>
+            <input type="range" id="cfg_postbuffer" min="1" max="15" step="1" value="5" oninput="syncInput('num_postbuffer', this.value); updateConfig()">
+        </div>
+
+        <div style="margin-top: auto; display: flex; flex-direction: column; gap: 10px;">
+            <button class="btn-panel primary" onclick="saveConfigPermanently()">Confirmar Cambios Permanente</button>
+            <button class="btn-panel" onclick="restoreDefaults()">Restablecer Valores de Fábrica</button>
+        </div>
+    </div>
+
+    <div id="workspace">
+        <div id="main-content">
+            <div class="grid-camaras">
+                {% for cam in camaras %}
+                <div class="cam-card" id="card-{{ cam }}">
+                    <div class="cam-header">
+                        <div class="cam-title-area">
+                            <button class="btn-cam-back" id="btn-back-{{ cam }}" onclick="toggleFocus('{{ cam }}')" title="Volver al panel general">◂</button>
+                            <span class="cam-title">Origen: {{ cam }}</span>
+                        </div>
+                        <div class="cam-controls-area">
+                            <div class="status-indicator">
+                                <span>Analizando</span>
+                                <div class="status-beacon"></div>
+                            </div>
+                            <button class="btn-cam-action" id="btn-zoom-{{ cam }}" onclick="toggleFocus('{{ cam }}')" title="Maximizar canal">⛶</button>
+                        </div>
+                    </div>
+                    <div class="video-container">
+                        <iframe data-cam="{{ cam }}" loading="lazy" allow="autoplay" scrolling="no"></iframe>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div id="bottom-system">
+        <div id="live-alerts">
+            <div class="panel-title-bar">
+                <span class="panel-title" style="color: var(--accent-alert);">Eventos de Riesgo Crítico</span>
+            </div>
+            <div class="log-feed" id="alert-feed">
+                <div class="alert-item">
+                    <span>SISTEMA INICIALIZADO</span>
+                    <span class="time">11:31</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="terminal-container">
+            <div class="panel-title-bar">
+                <span class="panel-title">Salida del Núcleo de Consola</span>
+                <button class="btn-toggle-sub" id="btn-min-term" onclick="toggleTerminal()">[-] MINIMIZAR</button>
+            </div>
+            <div class="log-feed" id="terminal-feed">
+                <div class="log-line info"><span class="timestamp">[11:31:01]</span>INFO: Localizando aceleradores de hardware...</div>
+                <div class="log-line success"><span class="timestamp">[11:31:03]</span>SUCCESS: Instancia de CUDA asignada correctamente a la GPU principal.</div>
+                <div class="log-line"><span class="timestamp">[11:31:05]</span>DEBUG: Sincronizando lotes paralelos para transmisiones activos.</div>
+            </div>
+        </div>
     </div>
 
     <script>
-
         const ipServidor = window.location.hostname;
 
-        // ==========================================
-        // INICIAR STREAMS
-        // ==========================================
-        document.querySelectorAll("iframe").forEach(ifr => {
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.getElementById('sidebar-overlay').classList.toggle('open');
+        }
 
-            const camName = ifr.dataset.cam;
+        function syncInput(targetId, value) {
+            document.getElementById(targetId).value = value;
+        }
 
-            const url =
-                `http://${ipServidor}:8889/${camName}/`;
-
-            ifr.dataset.baseurl = url;
-
-            ifr.src = url;
-        });
-
-        // ==========================================
-        // TOGGLE FOCUS
-        // ==========================================
-        function toggleFocus(element) {
-
-            const cards =
-                document.querySelectorAll(".cam-card");
-
-            // ======================================
-            // ENTRAR MODO FOCUS
-            // ======================================
-            if (!element.classList.contains("focus-mode")) {
-
-                element.classList.add("focus-mode");
-
-                document.body.classList.add("has-focus");
-
-                // Texto cerrar
-                element.querySelector("h3").innerHTML +=
-                    " <span class='txt-cerrar' style='color:red;font-size:0.9rem;'>(clic para cerrar)</span>";
-
-                // Apagar otras cámaras
-                cards.forEach(card => {
-
-                    if (card !== element) {
-
-                        const ifr =
-                            card.querySelector("iframe");
-
-                        ifr.src = "about:blank";
-                    }
-                });
-            }
-
-            // ======================================
-            // SALIR MODO FOCUS
-            // ======================================
-            else {
-
-                element.classList.remove("focus-mode");
-
-                document.body.classList.remove("has-focus");
-
-                // Quitar texto
-                const txt =
-                    element.querySelector(".txt-cerrar");
-
-                if (txt) txt.remove();
-
-                // Reactivar streams
-                cards.forEach(card => {
-
-                    const ifr =
-                        card.querySelector("iframe");
-
-                    if (
-                        ifr.src.includes("about:blank")
-                    ) {
-
-                        ifr.src =
-                            ifr.dataset.baseurl +
-                            "?t=" + Date.now();
-                    }
-                });
+        let terminalAbierta = true;
+        function toggleTerminal() {
+            const bottomSystem = document.getElementById('bottom-system');
+            const btn = document.getElementById('btn-min-term');
+            
+            if (terminalAbierta) {
+                bottomSystem.classList.add('minimized');
+                btn.innerText = "[+] MAXIMIZAR";
+                terminalAbierta = false;
+            } else {
+                bottomSystem.classList.remove('minimized');
+                btn.innerText = "[-] MINIMIZAR";
+                terminalAbierta = true;
             }
         }
 
+        document.querySelectorAll("iframe").forEach(ifr => {
+            const camName = ifr.dataset.cam;
+            ifr.src = `http://${ipServidor}:8889/${camName}/`;
+        });
+
+        function toggleFocus(camName) {
+            const card = document.getElementById(`card-${camName}`);
+            
+            if (!card.classList.contains("focus-mode")) {
+                card.classList.add("focus-mode");
+                document.body.classList.add("has-focus");
+            } else {
+                card.classList.remove("focus-mode");
+                document.body.classList.remove("has-focus");
+            }
+        }
     </script>
 </body>
 </html>

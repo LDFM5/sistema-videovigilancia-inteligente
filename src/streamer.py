@@ -36,45 +36,43 @@ class RTSPStreamer:
         # COMANDO FFMPEG
         # ======================================================
         command = [
-
             'ffmpeg',
+            '-y', # Sobrescribir sin preguntar
 
             # ==========================================
-            # INPUT
+            # INPUT (Lectura desde OpenCV)
             # ==========================================
             '-f', 'rawvideo',
-
             '-vcodec', 'rawvideo',
-
             '-pix_fmt', 'bgr24',
-
             '-s', f'{width}x{height}',
-
             '-r', str(fps),
-
             '-i', '-',
 
             # ==========================================
-            # OUTPUT
+            # OUTPUT (Inyección a MediaMTX)
             # ==========================================
-            '-an',
-
+            '-an',                    # Sin audio (ahorra ancho de banda)
             '-c:v', 'libx264',
-
             '-preset', 'ultrafast',
-
             '-tune', 'zerolatency',
-
-            '-pix_fmt', 'yuv420p',
-
             '-profile:v', 'baseline',
-
-            '-g', '10',
-
+            '-pix_fmt', 'yuv420p',
+            
+            # --- TWEAKS DE LATENCIA EXTREMA ---
+            '-bf', '0',               # Fuerza 0 B-frames (cero predicción temporal = cero lag)
+            '-max_delay', '0',        # Prohíbe a FFmpeg retener paquetes en su salida TCP
+            '-threads', '2',          # Limita los hilos. Si FFmpeg usa todos tus núcleos, ahoga a YOLO.
+            
+            # --- CONTROL DE TRÁFICO (VITAL PARA 3 CÁMARAS) ---
+            # Si no limitas esto, FFmpeg satura tu tarjeta de red local enviando picos gigantes
+            '-b:v', '800k',           # Target de 800 kbps por cámara
+            '-maxrate', '800k',       # Máximo estricto
+            '-bufsize', '1600k',      # Buffer de red al doble del maxrate (Estándar CBR)
+            '-g', str(fps),           # Un I-Frame por segundo exacto (recuperación rápida si hay pérdida)
+            
             '-f', 'rtsp',
-
-            '-rtsp_transport', 'tcp',
-
+            '-rtsp_transport', 'tcp', # TCP asegura que los frames lleguen en orden
             self.rtsp_url
         ]
 
