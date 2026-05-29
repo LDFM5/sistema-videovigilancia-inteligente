@@ -1,8 +1,8 @@
 """
 streamer.py
 
-Streamer RTSP robusto y optimizado para baja latencia.
-Compatible con MediaMTX + WebRTC.
+Subsistema de transmisión RTSP industrial optimizado para baja latencia.
+Despliegue robusto compatible con MediaMTX y WebRTC.
 """
 
 import subprocess
@@ -14,16 +14,18 @@ import time
 
 class RTSPStreamer:
 
-    def __init__(self, cam_name, width=640, height=480, fps=15):
-
-        self.cam_name = cam_name
+    def __init__(self, cam_name, width=640, height=480, fps=15, shared_state=None):
+        self.cam_name = cam_name.upper()
         self.width = width
         self.height = height
         self.fps = fps
-
+        # Guardar la referencia del estado unificado
+        self.shared_state = shared_state 
+        
         self.rtsp_url = f"rtsp://localhost:8554/{cam_name}"
 
-        print(f"📡 Inicializando RTSP -> {self.rtsp_url}")
+        # Consola nativa usando nomenclatura estándar de microkernel
+        print(f"INIT_KERNEL: INITIALIZING RTSP TRANSMISSION -> {self.rtsp_url}")
 
         # ======================================================
         # QUEUE DE SOLO 1 FRAME
@@ -64,8 +66,7 @@ class RTSPStreamer:
             '-max_delay', '0',        # Prohíbe a FFmpeg retener paquetes en su salida TCP
             '-threads', '2',          # Limita los hilos. Si FFmpeg usa todos tus núcleos, ahoga a YOLO.
             
-            # --- CONTROL DE TRÁFICO (VITAL PARA 3 CÁMARAS) ---
-            # Si no limitas esto, FFmpeg satura tu tarjeta de red local enviando picos gigantes
+            # --- CONTROL DE TRÁFICO (VITAL PARA MULTI-CÁMARA) ---
             '-b:v', '800k',           # Target de 800 kbps por cámara
             '-maxrate', '800k',       # Máximo estricto
             '-bufsize', '1600k',      # Buffer de red al doble del maxrate (Estándar CBR)
@@ -80,13 +81,19 @@ class RTSPStreamer:
         # LANZAR FFMPEG
         # ======================================================
         self.process = subprocess.Popen(
-
             command,
-
             stdin=subprocess.PIPE,
-
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE # El pipe de error requiere lectura constante no bloqueante
         )
+
+        # OPTIMIZACIÓN: Hilo secundario para limpiar constantemente el búfer stderr de FFmpeg
+        # Esto previene interrupciones críticas (Deadlock de tubería del SO)
+        self.error_reader_thread = threading.Thread(
+            target=self._consume_stderr,
+            daemon=True,
+            name=f"FFmpeg-Stderr-{self.cam_name}"
+        )
+        self.error_reader_thread.start()
 
         # ======================================================
         # THREAD STREAMING
@@ -94,44 +101,53 @@ class RTSPStreamer:
         self.thread = threading.Thread(
             target=self._stream_loop,
             daemon=True,
-            name=f"Streamer-{cam_name}"
+            name=f"Streamer-{self.cam_name}"
         )
 
         self.thread.start()
+
+    def _consume_stderr(self):
+        """Consume el canal de errores asincrónicamente para que el buffer del SO no se desborde."""
+        try:
+            while self.running and self.process.poll() is None:
+                line = self.process.stderr.readline()
+                if not line:
+                    break
+                # Se puede descomentar en fases avanzadas de diagnóstico de red
+                # print(f"FFMPEG_RAW_LOG ({self.cam_name}): {line.decode().strip()}")
+        except:
+            pass
 
     # ==========================================================
     # LOOP STREAMING
     # ==========================================================
     def _stream_loop(self):
+        # 🚨 SOLUCIÓN COMPLETADA: Ya no hay 'from app import...'
+        if self.shared_state:
+            self.shared_state.emitir_evento_dashboard('system_log', {
+                "type": "success", 
+                "message": f"TUBO_FFMPEG: INYECCIÓN DE FLUJO ESTABLECIDA PARA LA FUENTE: {self.cam_name}"
+            })
 
         while self.running:
-
             try:
-
                 frame = self.frame_queue.get(timeout=0.1)
-
             except queue.Empty:
                 continue
 
             try:
-
-                self.process.stdin.write(
-                    frame.tobytes()
-                )
-
+                self.process.stdin.write(frame.tobytes())
+                self.process.stdin.flush() 
             except Exception as e:
-
-                print(f"❌ FFmpeg error ({self.cam_name}): {e}")
-
-                try:
-
-                    err = self.process.stderr.read().decode()
-
-                    print(err)
-
-                except:
-                    pass
-
+                if self.shared_state:
+                    self.shared_state.emitir_evento_dashboard('camera_status', {
+                        "camera": self.cam_name.lower(), 
+                        "status": "error"
+                    })
+                    self.shared_state.emitir_evento_dashboard('system_log', {
+                        "type": "error", 
+                        "message": f"NÚCLEO_FLUJO_RTSP: TUBERÍA ROTA EN CANAL '{self.cam_name}' -> CÓDIGO_REF: {str(e).upper()}"
+                    })
                 break
 
     # ==========================================================
@@ -154,11 +170,8 @@ class RTSPStreamer:
         # ELIMINAR FRAME VIEJO
         # ==========================================
         try:
-
             if self.frame_queue.full():
-
                 self.frame_queue.get_nowait()
-
         except:
             pass
 
@@ -166,9 +179,7 @@ class RTSPStreamer:
         # AGREGAR FRAME NUEVO
         # ==========================================
         try:
-
             self.frame_queue.put_nowait(frame)
-
         except:
             pass
 
@@ -177,30 +188,23 @@ class RTSPStreamer:
     # ==========================================================
     def cerrar(self):
 
-        print(f"🛑 Cerrando stream -> {self.cam_name}")
+        print(f"SYS_KERNEL: TERMINATING STREAM LINK FOR SOURCE -> {self.cam_name}")
 
         self.running = False
-
         time.sleep(0.2)
 
         try:
-
             if self.process.stdin:
                 self.process.stdin.close()
-
         except:
             pass
 
         try:
-
             self.process.kill()
-
         except:
             pass
 
         try:
-
             self.process.wait(timeout=1)
-
         except:
             pass

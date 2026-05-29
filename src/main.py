@@ -2,9 +2,9 @@
 main.py
 
 Motor Principal de Inferencias (Edge AI Core)
-- Recolecta frames de los hilos asincronos de CameraStream.
+- Recolecta frames de los hilos asíncronos de CameraStream.
 - Ejecuta Inferencia por Lotes (Batching) a nivel de hardware.
-- Centraliza la grabacion automatizada, alertas y streaming RTSP/WebRTC.
+- Centraliza la grabación automatizada, alertas y streaming RTSP/WebRTC.
 """
 
 import cv2
@@ -12,13 +12,12 @@ import time
 import atexit
 from ultralytics import YOLO
 
-# Importaciones de modulos del ecosistema core
+# Importaciones de módulos del ecosistema core
 import config
 from cameras import initialize_cameras
 from detection import batch_detect_weapons, batch_detect_pose
 from temporal_logic import initialize_windows, update_window
 from recorder import initialize_recording_state, handle_recording
-from alerts import send_alert
 from streamer import RTSPStreamer
 from visualization import draw_performance_overlay
 
@@ -26,50 +25,62 @@ from behavior import load_behavior_model, predict_behavior
 from collections import deque
 
 
-def ejecutar_sistema_principal(shared_state=None):
-    print("STATUS: Inicializando modulo core de inferencias Edge AI...")
+def ejecutar_sistema_principal(shared_state):
+    # LAZY IMPORT ATÓMICO: Importaciones encapsuladas localmente para mitigar
+    # bloqueos mutuos (Deadlocks) e importaciones circulares en frío con app.py
+    from alerts import dispatch_security_alert
+
+    # Si por algún motivo shared_state no viene, evitamos un colapso en frío
+    if shared_state is None:
+        print("SYS_CORE_ERROR: NO SE PROVEYÓ EL PUNTERO DE MEMORIA COMPARTIDO SHARED_STATE.")
+        return
+
+    print("SYS_CORE: INICIALIZANDO NÚCLEO INFALIBLE DE INFERENCIAS EDGE AI...")
 
     # ======================================================
     # 1. CARGA DE MODELOS EN ACELERADORES DE HARDWARE
     # ======================================================
     weapon_model = None
     if config.ACTIVAR_MODELO_ARMAS:
-        print("INFO: Cargando red neuronal de deteccion de armamento...")
+        shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: CARGANDO RED NEURONAL DE DETECCIÓN DE ARMAMIENTO (YOLOV8)..."})
         weapon_model = YOLO(config.WEAPON_MODEL_PATH)
-        print("SUCCESS: Pipeline de deteccion de armamento operativo.")
+        shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: PIPELINE DE DETECCIÓN DE ARMAMIENTO TOTALMENTE OPERATIVO."})
 
     pose_model = None
     if config.ACTIVAR_MODELO_COMPORTAMIENTO:
-        print("INFO: Cargando red neuronal de estimacion de pose estructural...")
+        shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: CARGANDO RED NEURONAL DE ESTIMACIÓN DE POSE ESTRUCTURAL..."})
         pose_model = YOLO(config.POSE_MODEL_PATH)
-        print("SUCCESS: Pipeline de estimacion de pose operativo.")
+        shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: PIPELINE DE ESTIMACIÓN DE POSE OPERATIVO (STATUS_OK)."})
         
-        print("INFO: Cargando clasificador secuencial de comportamiento (GRU)...")
+        shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: CARGANDO CLASIFICADOR SECUENCIAL DE COMPORTAMIENTO (GRU)..."})
         SEQ_LENGTH = 16 
         CLASES_COMPORTAMIENTO = ["Normal", "Fighting"]
         gru_model, device = load_behavior_model(config.BEHAVIOR_MODEL_PATH)
-        print("SUCCESS: Clasificador secuencial GRU asignado a dispositivo core.")
+        shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": f"NÚCLEO_IA: CLASIFICADOR SECUENCIAL GRU ASIGNADO DISPOSITIVO: {str(device).upper()}"})
 
     # ======================================================
     # 2. INTERCONEXIÓN DE DISPOSITIVOS DE CAPTURA
     # ======================================================
-    cameras, camera_resolutions, camera_fps = initialize_cameras()
+    cameras, camera_resolutions_raw, camera_fps = initialize_cameras()
+    
+    # NORMALIZACIÓN INDUSTRIAL: Forzamos las llaves de resolución a mayúsculas
+    # para evitar errores de colisión (KeyError) entre hilos concurrentes
+    camera_resolutions = {k.upper(): v for k, v in camera_resolutions_raw.items()}
 
     # ======================================================
     # 2.5 ASIGNACIÓN DE REGISTROS DE MEMORIA VOLÁTIL
     # ======================================================
     if config.ACTIVAR_MODELO_COMPORTAMIENTO:
-        # Estructura: { cam_name: { track_id: deque(maxlen=SEQ_LENGTH) } }
-        historial_personas = {cam_name: {} for cam_name in cameras}
+        historial_personas = {cam_name.upper(): {} for cam_name in cameras}
 
     # ======================================================
     # 3. FILTROS DE MITIGACIÓN Y VENTANAS TEMPORALES
     # ======================================================
     windows_armas = initialize_windows(camera_fps, config.WINDOW_SECONDS)
-    alert_state_armas = {cam_name: False for cam_name in cameras}
+    alert_state_armas = {cam_name.upper(): False for cam_name in cameras}
     
-    # Registro de supresion de redundancia para notificaciones externas
-    alertas_enviadas_evento = {cam_name: set() for cam_name in cameras}
+    # Registro de supresión de redundancia para notificaciones externas
+    alertas_enviadas_evento = {cam_name.upper(): set() for cam_name in cameras}
 
     recording_state = initialize_recording_state(cameras, config.PRE_BUFFER_SECONDS)
 
@@ -78,21 +89,23 @@ def ejecutar_sistema_principal(shared_state=None):
     # ======================================================
     streamers = {}
     for cam_name in cameras:
-        w, h = camera_resolutions[cam_name]
+        cam_upper = cam_name.upper()
+        w, h = camera_resolutions[cam_upper] 
         target_w = 800
         target_h = int((target_w / w) * h)
         if target_h % 2 != 0: 
             target_h += 1
 
-        streamers[cam_name] = RTSPStreamer(
-            cam_name, width=target_w, height=target_h, fps=15
+        # Pasamos shared_state para que el streamer emita logs en la misma memoria
+        streamers[cam_upper] = RTSPStreamer(
+            cam_name, width=target_w, height=target_h, fps=15, shared_state=shared_state
         )
 
     # ======================================================
     # 5. PROTOCOLO DE DESCONEXIÓN SEGURA (CLEANUP)
     # ======================================================
     def limpieza_segura():
-        print("\nINFO: Solicitando detencion general de hilos y liberacion de hardware...")
+        print("\nSYS_CORE: SIGNAL_DE_TERMINACIÓN_RECIBIDA. LIBERANDO RECURSOS DE HARDWARE...")
         for cap in cameras.values():
             if hasattr(cap, 'release'): cap.release()
             elif hasattr(cap, 'stop'): cap.stop()
@@ -101,11 +114,18 @@ def ejecutar_sistema_principal(shared_state=None):
             streamer.cerrar()
             
         cv2.destroyAllWindows()
-        print("SUCCESS: Todos los recursos de hardware han sido liberados de forma segura.")
+        print("SYS_CORE: PROTOCOLO_DE_LIMPIEZA_COMPLETADO. RECURSOS LIBERADOS EN REGLA.")
 
     atexit.register(limpieza_segura)
 
-    print("INFO: Bucle de ejecucion continua inicializado (Modo Batch Activo)")
+    # INICIALIZACIÓN UNIFICADA DEL DASHBOARD EN FRÍO
+    for cam_name in cameras:
+        shared_state.emitir_evento_dashboard('camera_status', {
+            "camera": cam_name.lower(), 
+            "status": "analyzing"
+        })
+
+    shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: BUCLE_DE_INFERENCIA_CONTINUO_DESPLEGADO (MODO_BATCH_ESTABLE)"})
     tiempo_anterior = time.time()
 
     # ======================================================
@@ -122,13 +142,13 @@ def ejecutar_sistema_principal(shared_state=None):
             
             if frame is not None:
                 frames_list.append(frame.copy())
-                cam_names_list.append(cam_name)
+                cam_names_list.append(cam_name.upper())
 
         if not frames_list:
             time.sleep(0.01)
             continue
 
-        # B. Metricas de rendimiento del ciclo core
+        # B. Métricas de rendimiento del ciclo core
         tiempo_actual = time.time()
         fps_real = 1.0 / (tiempo_actual - tiempo_anterior) if tiempo_anterior > 0 else 0.0
         tiempo_anterior = tiempo_actual
@@ -149,13 +169,13 @@ def ejecutar_sistema_principal(shared_state=None):
 
         if config.ACTIVAR_MODELO_COMPORTAMIENTO and pose_model:
             pose_results, skeletons_data = batch_detect_pose(
-                pose_model, frames_list, conf=0.5, modo_debug=config.MODO_DEBUG
+                pose_model, frames_list, conf=0.5
             )
 
         # ==================================================
         # D. ANALÍTICA DE DATOS COOPERATIVA POR CANAL
         # ==================================================
-        for i, cam_name in enumerate(cam_names_list):
+        for i, cam_upper in enumerate(cam_names_list):
             frame = frames_list[i]
             w_res = weapon_results[i] if i < len(weapon_results) else None
             p_res = pose_results[i] if i < len(pose_results) else None
@@ -173,8 +193,6 @@ def ejecutar_sistema_principal(shared_state=None):
 
             # --- PROCESAMIENTO TEMPORAL: ANÁLISIS DE POSE Y GRU ---
             if p_res:
-                # CORRECCIÓN DE RUIDO VISUAL: Solo dibuja el esqueleto si MODO_DEBUG esta activo.
-                # En modo produccion, los puntos se extraen en silencio para alimentar al clasificador.
                 if config.MODO_DEBUG:
                     frame = p_res.plot(img=frame)
                 
@@ -183,66 +201,90 @@ def ejecutar_sistema_principal(shared_state=None):
                     
                     for i_persona, track_id in enumerate(ids_personas):
                         kp_persona = esqueletos_camara[i_persona] 
-                        
-                        # Extraccion geometrica de coordenadas (X, Y) normalizadas
                         kp_aplanado = kp_persona[:, :2].flatten()
                         
-                        if track_id not in historial_personas[cam_name]:
-                            historial_personas[cam_name][track_id] = deque(maxlen=SEQ_LENGTH)
+                        if track_id not in historial_personas[cam_upper]:
+                            historial_personas[cam_upper][track_id] = deque(maxlen=SEQ_LENGTH)
                         
-                        historial_personas[cam_name][track_id].append(kp_aplanado)
+                        historial_personas[cam_upper][track_id].append(kp_aplanado)
                         
-                        # Evaluacion secuencial temporal
-                        if len(historial_personas[cam_name][track_id]) == SEQ_LENGTH:
+                        if len(historial_personas[cam_upper][track_id]) == SEQ_LENGTH:
                             comportamiento = predict_behavior(
                                 gru_model, device, 
-                                historial_personas[cam_name][track_id], 
+                                historial_personas[cam_upper][track_id], 
                                 CLASES_COMPORTAMIENTO
                             )
                             
                             if comportamiento != "Normal":
                                 comportamiento_anomalo = True
-                                nombre_comportamiento = comportamiento
-                                # Alerta en pantalla en formato rigido
-                                cv2.putText(frame, f"CRITICAL: {comportamiento.upper()} DETECTED", (50, 100), 
+                                nombre_comportamiento = comportamiento.upper()
+                                cv2.putText(frame, f"CRITICAL: {nombre_comportamiento} DETECTED", (50, 100), 
                                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
                                 
-                    # Liberacion dinamica de registros de entidades desvinculadas (RAM cleanup)
-                    ids_a_borrar = [tid for tid in historial_personas[cam_name].keys() if tid not in ids_personas]
+                    ids_a_borrar = [tid for tid in historial_personas[cam_upper].keys() if tid not in ids_personas]
                     for tid in ids_a_borrar:
-                        del historial_personas[cam_name][tid]
+                        del historial_personas[cam_upper][tid]
 
-            # --- ANÁLISIS LOGÍCO TEMPORAL (Supresion de falsos positivos) ---
+            # --- ANÁLISIS LÓGICO TEMPORAL (Supresión de falsos positivos) ---
             alerta_arma = update_window(
-                cam_name, weapon_in_frame, windows_armas, 
+                cam_upper.lower(), weapon_in_frame, windows_armas, 
                 config.ACTIVATION_THRESHOLD, alert_state_armas
             )
 
-            # --- DESPACHO DE ALERTAS CRÍTICAS ---
-            if not recording_state[cam_name]["recording"]:
-                alertas_enviadas_evento[cam_name].clear()
-                
-            if alerta_arma and "arma" not in alertas_enviadas_evento[cam_name]:
-                send_alert(cam_name, f"WARNING: Deteccion de armamento confirmada en canal: {cam_name}")
-                alertas_enviadas_evento[cam_name].add("arma")
-
-            if comportamiento_anomalo and nombre_comportamiento not in alertas_enviadas_evento[cam_name]:
-                send_alert(cam_name, f"CRITICAL: Comportamiento hostil confirmado en canal {cam_name}: {nombre_comportamiento.upper()}")
-                alertas_enviadas_evento[cam_name].add(nombre_comportamiento)
-
+            # RESOLUCIÓN DE VARIABLES DE CONTROL INTERNO
             alert_triggered = alerta_arma or comportamiento_anomalo
             amenaza_presente = weapon_in_frame or comportamiento_anomalo
 
-            # --- CONTROL MULTIMEDIA Y SALIDA RTSP ---
-            frame = draw_performance_overlay(frame, fps_real)
+            # --- OBTENCIÓN DEL ESTADO ANTES DE LA EVALUACIÓN MULTIMEDIA ---
+            estaba_grabando = recording_state[cam_upper]["recording"]
 
+            # --- PIPELINE DE PERSISTENCIA MULTIMEDIA (MÁQUINA DE ESTADOS) ---
             handle_recording(
-                cam_name, frame, camera_resolutions, recording_state,
-                config.POST_BUFFER_SECONDS, alert_triggered, amenaza_presente
+                cam_upper, frame, camera_resolutions, recording_state,
+                config.POST_BUFFER_SECONDS, alert_triggered, amenaza_presente, shared_state=shared_state
             )
 
-            streamers[cam_name].enviar_frame(frame)
+            # --- OBTENCIÓN DEL ESTADO POST-EVALUACIÓN MULTIMEDIA ---
+            esta_grabando_actualmente = recording_state[cam_upper]["recording"]
 
+            # =========================================================================
+            # SINCRONIZACIÓN SOBERANA DEL DASHBOARD CON EL ESTADO REAL DE GRABACIÓN
+            # =========================================================================
+            
+            # CASO 1: Transición de Apagado -> Encendido (Comienza a grabar un evento confirmado)
+            if esta_grabando_actualmente and not estaba_grabando:
+                shared_state.emitir_evento_dashboard('camera_status', {
+                    "camera": cam_upper.lower(), 
+                    "status": "detecting"
+                })
+                
+                if alerta_arma and "ARMA" not in alertas_enviadas_evento[cam_upper]:
+                    dispatch_security_alert(
+                        cam_name=cam_upper, 
+                        log_type="Arma detectada", 
+                        message_payload="Presencia de objeto peligroso confirmada", 
+                        shared_state=shared_state
+                    )
+                    alertas_enviadas_evento[cam_upper].add("ARMA")
 
-if __name__ == "__main__":
-    ejecutar_sistema_principal()
+                if comportamiento_anomalo and nombre_comportamiento not in alertas_enviadas_evento[cam_upper]:
+                    dispatch_security_alert(
+                        cam_name=cam_upper, 
+                        log_type="Comportamiento hostil", 
+                        message_payload=f"Actividad sospechosa detectada como {nombre_comportamiento.lower()}", 
+                        shared_state=shared_state
+                    )
+                    alertas_enviadas_evento[cam_upper].add(nombre_comportamiento)
+
+            # CASO 2: Transición de Encendido -> Apagado (Finalizó el evento y se salvó el clip)
+            elif not esta_grabando_actualmente and estaba_grabando:
+                alertas_enviadas_evento[cam_upper].clear()
+                
+                shared_state.emitir_evento_dashboard('camera_status', {
+                    "camera": cam_upper.lower(), 
+                    "status": "analyzing"
+                })
+
+            # --- CONTROL MULTIMEDIA Y SALIDA RTSP ---
+            frame = draw_performance_overlay(frame, fps_real)
+            streamers[cam_upper].enviar_frame(frame)
