@@ -24,6 +24,9 @@ from visualization import draw_performance_overlay
 from behavior import load_behavior_model, predict_behavior
 from collections import deque
 
+# Registro global dinámico para permitir la lectura externa de estados en caliente
+_registro_estados_global = {}
+
 
 def ejecutar_sistema_principal(shared_state):
     # LAZY IMPORT ATÓMICO: Importaciones encapsuladas localmente para mitigar
@@ -38,50 +41,36 @@ def ejecutar_sistema_principal(shared_state):
     print("SYS_CORE: INICIALIZANDO NÚCLEO INFALIBLE DE INFERENCIAS EDGE AI...")
 
     # ======================================================
-    # 1. CARGA DE MODELOS EN ACELERADORES DE HARDWARE
+    # 1. INICIALIZACIÓN DE PUNTEROS NEURONALES (DIFERIDOS)
     # ======================================================
+    # Inicializamos las variables vacías para permitir que se carguen 
+    # dinámicamente en caliente desde el bucle de inferencia.
     weapon_model = None
-    if config.ACTIVAR_MODELO_ARMAS:
-        shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: CARGANDO RED NEURONAL DE DETECCIÓN DE ARMAMIENTO (YOLOV8)..."})
-        weapon_model = YOLO(config.WEAPON_MODEL_PATH)
-        shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: PIPELINE DE DETECCIÓN DE ARMAMIENTO TOTALMENTE OPERATIVO."})
-
     pose_model = None
-    if config.ACTIVAR_MODELO_COMPORTAMIENTO:
-        shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: CARGANDO RED NEURONAL DE ESTIMACIÓN DE POSE ESTRUCTURAL..."})
-        pose_model = YOLO(config.POSE_MODEL_PATH)
-        shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: PIPELINE DE ESTIMACIÓN DE POSE OPERATIVO (STATUS_OK)."})
-        
-        shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: CARGANDO CLASIFICADOR SECUENCIAL DE COMPORTAMIENTO (GRU)..."})
-        SEQ_LENGTH = 16 
-        CLASES_COMPORTAMIENTO = ["Normal", "Fighting"]
-        gru_model, device = load_behavior_model(config.BEHAVIOR_MODEL_PATH)
-        shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": f"NÚCLEO_IA: CLASIFICADOR SECUENCIAL GRU ASIGNADO DISPOSITIVO: {str(device).upper()}"})
+    gru_model = None
+    device = None
+    
+    # Constantes estructurales del clasificador secundario
+    SEQ_LENGTH = 16 
+    CLASES_COMPORTAMIENTO = ["Normal", "Fighting"]
 
     # ======================================================
     # 2. INTERCONEXIÓN DE DISPOSITIVOS DE CAPTURA
     # ======================================================
     cameras, camera_resolutions_raw, camera_fps = initialize_cameras()
-    
-    # NORMALIZACIÓN INDUSTRIAL: Forzamos las llaves de resolución a mayúsculas
-    # para evitar errores de colisión (KeyError) entre hilos concurrentes
     camera_resolutions = {k.upper(): v for k, v in camera_resolutions_raw.items()}
 
     # ======================================================
     # 2.5 ASIGNACIÓN DE REGISTROS DE MEMORIA VOLÁTIL
     # ======================================================
-    if config.ACTIVAR_MODELO_COMPORTAMIENTO:
-        historial_personas = {cam_name.upper(): {} for cam_name in cameras}
+    historial_personas = {cam_name.upper(): {} for cam_name in cameras}
 
     # ======================================================
     # 3. FILTROS DE MITIGACIÓN Y VENTANAS TEMPORALES
     # ======================================================
     windows_armas = initialize_windows(camera_fps, config.WINDOW_SECONDS)
     alert_state_armas = {cam_name.upper(): False for cam_name in cameras}
-    
-    # Registro de supresión de redundancia para notificaciones externas
     alertas_enviadas_evento = {cam_name.upper(): set() for cam_name in cameras}
-
     recording_state = initialize_recording_state(cameras, config.PRE_BUFFER_SECONDS)
 
     # ======================================================
@@ -96,7 +85,6 @@ def ejecutar_sistema_principal(shared_state):
         if target_h % 2 != 0: 
             target_h += 1
 
-        # Pasamos shared_state para que el streamer emita logs en la misma memoria
         streamers[cam_upper] = RTSPStreamer(
             cam_name, width=target_w, height=target_h, fps=15, shared_state=shared_state
         )
@@ -135,11 +123,9 @@ def ejecutar_sistema_principal(shared_state):
         frames_list = []
         cam_names_list = []
 
-        # A. Captura paralela de frames desde buffers de memoria
         for cam_name, cap in cameras.items():
             res = cap.read()
             frame = res[1] if isinstance(res, tuple) else res
-            
             if frame is not None:
                 frames_list.append(frame.copy())
                 cam_names_list.append(cam_name.upper())
@@ -148,10 +134,51 @@ def ejecutar_sistema_principal(shared_state):
             time.sleep(0.01)
             continue
 
-        # B. Métricas de rendimiento del ciclo core
         tiempo_actual = time.time()
-        fps_real = 1.0 / (tiempo_actual - tiempo_anterior) if tiempo_anterior > 0 else 0.0
+        diferencia_tiempo = tiempo_actual - tiempo_anterior
+        
+        # Salvaguarda: Si la diferencia es cero o menor, forzamos un mínimo para evitar el colapso
+        if diferencia_tiempo <= 0:
+            diferencia_tiempo = 0.001
+            
+        fps_real = 1.0 / diferencia_tiempo
         tiempo_anterior = tiempo_actual
+
+        # =========================================================================
+        # GESTIÓN EN CALIENTE DE HARDWARE (CARGA/DESCARGA DINÁMICA DE MODELOS)
+        # =========================================================================
+        
+        # --- CONTROL MODELO DE ARMAS ---
+        if shared_state.config_ram["cfg_armas"]:
+            if weapon_model is None:
+                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: DETECTADO COMANDO DE ACTIVACIÓN. CARGANDO MODELO DE ARMAS (YOLOV8)..."})
+                weapon_model = YOLO(config.WEAPON_MODEL_PATH)
+                shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: MODELO DE ARMAS TOTALMENTE DESPLEGADO EN MEMORIA."})
+        else:
+            if weapon_model is not None:
+                shared_state.emitir_evento_dashboard('system_log', {"type": "warn", "message": "NÚCLEO_IA: DETECTADO COMANDO DE DESACTIVACIÓN. LIBERANDO MEMORIA DEL MODELO DE ARMAS..."})
+                weapon_model = None
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: RECURSOS DEL MODELO DE ARMAS LIBERADOS CORRECTAMENTE."})
+
+        # --- CONTROL MODELO DE COMPORTAMIENTO Y POSE ---
+        if shared_state.config_ram["cfg_comportamiento"]:
+            if pose_model is None or gru_model is None:
+                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: DETECTADO COMANDO DE ACTIVACIÓN. CARGANDO MODELOS DE COMPORTAMIENTO..."})
+                pose_model = YOLO(config.POSE_MODEL_PATH)
+                gru_model, device = load_behavior_model(config.BEHAVIOR_MODEL_PATH)
+                shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": f"NÚCLEO_IA: PIPELINE DE COMPORTAMIENTO DESPLEGADO EN DISPOSITIVO: {str(device).upper()}"})
+        else:
+            if pose_model is not None or gru_model is not None:
+                shared_state.emitir_evento_dashboard('system_log', {"type": "warn", "message": "NÚCLEO_IA: DETECTADO COMANDO DE DESACTIVACIÓN. LIBERANDO PIPELINE DE COMPORTAMIENTO..."})
+                pose_model = None
+                gru_model = None
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: RECURSOS DE POSE Y GRU TEMPORAL LIBERADOS."})
 
         # ==================================================
         # C. PROCESAMIENTO MATRICIAL EN LOTE (BATCH INFERENCE)
@@ -161,13 +188,15 @@ def ejecutar_sistema_principal(shared_state):
         pose_results = []
         skeletons_data = []
 
-        if config.ACTIVAR_MODELO_ARMAS and weapon_model:
+        if weapon_model is not None:
             weapon_results, alertas_armas_batch = batch_detect_weapons(
-                weapon_model, frames_list, conf=config.CONF_WEAPON, 
-                clases_alerta=config.CLASES_ARMAS_ALERTA, modo_debug=config.MODO_DEBUG
+                weapon_model, frames_list, 
+                conf=shared_state.config_ram["cfg_confianza"], 
+                clases_alerta=config.CLASES_ARMAS_ALERTA, 
+                modo_debug=config.MODO_DEBUG
             )
 
-        if config.ACTIVAR_MODELO_COMPORTAMIENTO and pose_model:
+        if pose_model is not None:
             pose_results, skeletons_data = batch_detect_pose(
                 pose_model, frames_list, conf=0.5
             )
@@ -186,13 +215,13 @@ def ejecutar_sistema_principal(shared_state):
             nombre_comportamiento = ""
 
             # --- FILTRADO DE SEGURIDAD: DETECCIÓN DE ARMAS ---
-            weapon_in_frame = alertas_armas_batch[i] if i < len(alertas_armas_batch) else False
-
-            if w_res and len(w_res.boxes) > 0:
-                frame = w_res.plot(img=frame)
+            if weapon_model is not None:
+                weapon_in_frame = alertas_armas_batch[i] if i < len(alertas_armas_batch) else False
+                if w_res and len(w_res.boxes) > 0:
+                    frame = w_res.plot(img=frame)
 
             # --- PROCESAMIENTO TEMPORAL: ANÁLISIS DE POSE Y GRU ---
-            if p_res:
+            if gru_model is not None and p_res is not None:
                 if config.MODO_DEBUG:
                     frame = p_res.plot(img=frame)
                 
@@ -227,13 +256,13 @@ def ejecutar_sistema_principal(shared_state):
 
             # --- ANÁLISIS LÓGICO TEMPORAL (Supresión de falsos positivos) ---
             alerta_arma = update_window(
-                cam_upper.lower(), weapon_in_frame, windows_armas, 
+                cam_upper, weapon_in_frame, windows_armas, 
                 config.ACTIVATION_THRESHOLD, alert_state_armas
             )
 
             # RESOLUCIÓN DE VARIABLES DE CONTROL INTERNO
-            alert_triggered = alerta_arma or comportamiento_anomalo
-            amenaza_presente = weapon_in_frame or comportamiento_anomalo
+            alert_triggered = (alerta_arma if weapon_model is not None else False) or comportamiento_anomalo
+            amenaza_presente = (weapon_in_frame if weapon_model is not None else False) or comportamiento_anomalo
 
             # --- OBTENCIÓN DEL ESTADO ANTES DE LA EVALUACIÓN MULTIMEDIA ---
             estaba_grabando = recording_state[cam_upper]["recording"]
@@ -241,7 +270,7 @@ def ejecutar_sistema_principal(shared_state):
             # --- PIPELINE DE PERSISTENCIA MULTIMEDIA (MÁQUINA DE ESTADOS) ---
             handle_recording(
                 cam_upper, frame, camera_resolutions, recording_state,
-                config.POST_BUFFER_SECONDS, alert_triggered, amenaza_presente, shared_state=shared_state
+                shared_state.config_ram["cfg_postbuffer"], alert_triggered,  amenaza_presente, shared_state=shared_state
             )
 
             # --- OBTENCIÓN DEL ESTADO POST-EVALUACIÓN MULTIMEDIA ---
@@ -250,8 +279,6 @@ def ejecutar_sistema_principal(shared_state):
             # =========================================================================
             # SINCRONIZACIÓN SOBERANA DEL DASHBOARD CON EL ESTADO REAL DE GRABACIÓN
             # =========================================================================
-            
-            # CASO 1: Transición de Apagado -> Encendido (Comienza a grabar un evento confirmado)
             if esta_grabando_actualmente and not estaba_grabando:
                 shared_state.emitir_evento_dashboard('camera_status', {
                     "camera": cam_upper.lower(), 
@@ -276,7 +303,6 @@ def ejecutar_sistema_principal(shared_state):
                     )
                     alertas_enviadas_evento[cam_upper].add(nombre_comportamiento)
 
-            # CASO 2: Transición de Encendido -> Apagado (Finalizó el evento y se salvó el clip)
             elif not esta_grabando_actualmente and estaba_grabando:
                 alertas_enviadas_evento[cam_upper].clear()
                 
@@ -288,3 +314,25 @@ def ejecutar_sistema_principal(shared_state):
             # --- CONTROL MULTIMEDIA Y SALIDA RTSP ---
             frame = draw_performance_overlay(frame, fps_real)
             streamers[cam_upper].enviar_frame(frame)
+
+            # --- CONTROL MULTIMEDIA Y SALIDA RTSP ---
+            frame = draw_performance_overlay(frame, fps_real)
+            streamers[cam_upper].enviar_frame(frame)
+            
+            # 🚨 ACTUALIZACIÓN DE FOTOGRAFÍA GLOBAL: Guarda el estado exacto de este frame
+            global _registro_estados_global
+            # Si la cámara está en error por cameras.py, conserva ese estado prioritario
+            if hasattr(cameras[cam_name], 'estado_error_enviado') and cameras[cam_name].estado_error_enviado:
+                _registro_estados_global[cam_name.lower()] = "error"
+            elif esta_grabando_actualmente:
+                _registro_estados_global[cam_name.lower()] = "detecting"
+            else:
+                _registro_estados_global[cam_name.lower()] = "analyzing"
+
+def obtener_mapa_estados_actual():
+    """
+    Punto de acceso seguro para que Flask consulte el estado en tiempo real 
+    de las cámaras sin intervenir en el bucle principal de inferencia.
+    """
+    global _registro_estados_global
+    return _registro_estados_global

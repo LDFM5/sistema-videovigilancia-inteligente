@@ -438,11 +438,11 @@
             <h3>Modelos Neuronal Espacial</h3>
             <div class="control-row">
                 <span>Detección de Armamento (YOLO)</span>
-                <input type="checkbox" id="cfg_armas" checked onchange="updateConfig()">
+                <input type="checkbox" id="cfg_armas" {% if config_ram['cfg_armas'] %}checked{% endif %} onchange="updateConfig()">
             </div>
             <div class="control-row">
                 <span>Análisis del Comportamiento (GRU)</span>
-                <input type="checkbox" id="cfg_comportamiento" checked onchange="updateConfig()">
+                <input type="checkbox" id="cfg_comportamiento" {% if config_ram['cfg_comportamiento'] %}checked{% endif %} onchange="updateConfig()">
             </div>
         </div>
 
@@ -450,24 +450,24 @@
             <h3>Parámetros de Umbral</h3>
             <div class="control-row">
                 <span>Confianza del Filtro</span>
-                <input type="number" id="num_confianza" class="input-number-precise" min="0.1" max="0.9" step="0.05" value="0.50" onchange="syncInput('cfg_confianza', this.value); updateConfig()">
+                <input type="number" id="num_confianza" class="input-number-precise" min="0.1" max="0.9" step="0.05" value="{{ '%0.2f' | format(config_ram['cfg_confianza'] | float) }}" onchange="syncInput('cfg_confianza', this.value); updateConfig()">
             </div>
-            <input type="range" id="cfg_confianza" min="0.1" max="0.9" step="0.05" value="0.5" oninput="syncInput('num_confianza', this.value); updateConfig()">
+            <input type="range" id="cfg_confianza" min="0.1" max="0.9" step="0.05" value="{{ config_ram['cfg_confianza'] }}" oninput="syncInput('num_confianza', this.value); updateConfig()">
         </div>
 
         <div class="config-section">
             <h3>Memoria Volátil (Buffers)</h3>
             <div class="control-row">
                 <span>Pre-registro (Segundos)</span>
-                <input type="number" id="num_prebuffer" class="input-number-precise" min="1" max="10" step="1" value="3" onchange="syncInput('cfg_prebuffer', this.value); updateConfig()">
+                <input type="number" id="num_prebuffer" class="input-number-precise" min="1" max="10" step="1" value="{{ config_ram['cfg_prebuffer'] | int }}" onchange="syncInput('cfg_prebuffer', this.value); updateConfig()">
             </div>
-            <input type="range" id="cfg_prebuffer" min="1" max="10" step="1" value="3" oninput="syncInput('num_prebuffer', this.value); updateConfig()">
+            <input type="range" id="cfg_prebuffer" min="1" max="10" step="1" value="{{ config_ram['cfg_prebuffer'] }}" oninput="syncInput('num_prebuffer', this.value); updateConfig()">
             
             <div class="control-row">
                 <span>Post-registro (Segundos)</span>
-                <input type="number" id="num_postbuffer" class="input-number-precise" min="1" max="15" step="1" value="5" onchange="syncInput('cfg_postbuffer', this.value); updateConfig()">
+                <input type="number" id="num_postbuffer" class="input-number-precise" min="1" max="15" step="1" value="{{ config_ram['cfg_postbuffer'] | int }}" onchange="syncInput('cfg_postbuffer', this.value); updateConfig()">
             </div>
-            <input type="range" id="cfg_postbuffer" min="1" max="15" step="1" value="5" oninput="syncInput('num_postbuffer', this.value); updateConfig()">
+            <input type="range" id="cfg_postbuffer" min="1" max="15" step="1" value="{{ config_ram['cfg_postbuffer'] }}" oninput="syncInput('num_postbuffer', this.value); updateConfig()">
         </div>
 
         <div style="margin-top: auto; display: flex; flex-direction: column; gap: 10px;">
@@ -574,7 +574,6 @@
 
         function toggleFocus(camName) {
             if (!camName) return;
-            // Selector industrial tolerante: busca IDs que contengan el nombre de la cámara
             const card = document.querySelector(`[id*="${camName.toLowerCase().trim()}"]`);
             if (!card) return;
             
@@ -588,16 +587,88 @@
         }
 
         /* =========================================================================
+           PASARELA DE CONTROL: ENVÍO DE PARÁMETROS EN TIEMPO REAL AL BACKEND
+           ========================================================================= */
+
+        function updateConfig() {
+            const payload = {
+                "cfg_armas": document.getElementById('cfg_armas').checked,
+                "cfg_comportamiento": document.getElementById('cfg_comportamiento').checked,
+                "cfg_confianza": parseFloat(document.getElementById('cfg_confianza').value),
+                "cfg_prebuffer": parseInt(document.getElementById('cfg_prebuffer').value),
+                "cfg_postbuffer": parseInt(document.getElementById('cfg_postbuffer').value)
+            };
+
+            fetch('/update_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .catch(err => console.error("ERROR_ACTUALIZACION_RAM:", err));
+        }
+
+        function saveConfigPermanently() {
+            fetch('/save_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.code === 200) {
+                    toggleSidebar();
+                }
+            })
+            .catch(err => console.error("ERROR_PERSISTENCIA_DISCO:", err));
+        }
+
+        function restoreDefaults() {
+            fetch('/restore_defaults', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(res => res.json())
+            .then(resData => {
+                if (resData.code === 200 && resData.data) {
+                    const def = resData.data;
+                    
+                    // Sincronizar selectores booleanos (Feature Flags)
+                    document.getElementById('cfg_armas').checked = def.cfg_armas;
+                    document.getElementById('cfg_comportamiento').checked = def.cfg_comportamiento;
+                    
+                    // Sincronizar umbral de confianza (Flotante)
+                    const confianzaFlotante = parseFloat(def.cfg_confianza);
+                    document.getElementById('cfg_confianza').value = confianzaFlotante;
+                    document.getElementById('num_confianza').value = confianzaFlotante.toFixed(2);
+                    
+                    // Sincronizar buffer de pre-registro (Entero)
+                    const prebufferEntero = parseInt(def.cfg_prebuffer);
+                    document.getElementById('cfg_prebuffer').value = prebufferEntero;
+                    document.getElementById('num_prebuffer').value = prebufferEntero;
+                    
+                    // Sincronizar buffer de post-registro (Entero)
+                    const postbufferEntero = parseInt(def.cfg_postbuffer);
+                    document.getElementById('cfg_postbuffer').value = postbufferEntero;
+                    document.getElementById('num_postbuffer').value = postbufferEntero;
+                    
+                    // Notificar al backend de inmediato los nuevos cambios en la memoria RAM de inferencia
+                    updateConfig();
+
+                    // Cerrar el panel lateral de configuraciones
+                    toggleSidebar();
+                }
+            })
+            .catch(err => console.error("ERROR_RESTAURACION_FABRICA:", err));
+        }
+
+        /* =========================================================================
            NÚCLEO DE ACTUALIZACIÓN EN TIEMPO REAL (TELEMETRÍA DE ALTA FIDELIDAD)
            ========================================================================= */
         
         function updateCameraState(camName, state) {
             if (!camName || !state) return;
             
-            // Limpieza estricta de la cadena recibida de Python
             const cleanName = camName.toLowerCase().trim();
             
-            // 🚨 OPTIMIZACIÓN SOBERANA: Selector flexible que ignora discrepancias de Jinja2 o config.py
             const card = document.querySelector(`[id*="${cleanName}"]`);
             const textSpan = document.querySelector(`[id*="status-text-${cleanName}"]`);
             const overlay = document.querySelector(`[id*="overlay-error-${cleanName}"]`);
@@ -649,8 +720,6 @@
 
             logLine.innerHTML = `<span class="timestamp">${timeStr}</span> ── ${prefix}${message.toUpperCase()}`;
             feed.appendChild(logLine);
-            
-            // Forzar autoscroll adaptativo industrial
             feed.scrollTop = feed.scrollHeight;
         }
 
@@ -669,6 +738,27 @@
             feed.insertBefore(alertItem, feed.firstChild);
         }
 
+        /* =========================================================================
+           SINCRONIZACIÓN INICIAL: RECUPERACIÓN DE ESTADOS EN FRÍO AL CARGAR
+           ========================================================================= */
+
+        function sincronizarEstadoInicial() {
+            fetch('/get_initial_state')
+                .then(res => res.json())
+                .then(resData => {
+                    if (resData.code === 200 && resData.data) {
+                        const mapa = resData.data;
+                        for (const camName in mapa) {
+                            const estadoActual = mapa[camName];
+                            updateCameraState(camName, estadoActual);
+                        }
+                    }
+                })
+                .catch(err => console.error("ERROR_SINCRONIZACION_INICIAL:", err));
+        }
+
+        document.addEventListener("DOMContentLoaded", sincronizarEstadoInicial);
+
         // =========================================================================
         // PROTOCOLO DE CONEXIÓN SSE CON FILTRADO ROBUSTO DE CADENAS
         // =========================================================================
@@ -678,7 +768,6 @@
             try {
                 if (!e.data) return;
                 
-                // Sanitización y remoción de saltos de carro ocultos del búfer HTTP de Python
                 const deSerialized = e.data.trim();
                 const rawData = JSON.parse(deSerialized);
                 
