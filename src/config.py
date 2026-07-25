@@ -20,14 +20,6 @@ import os
 import json
 
 # =========================
-# MODO DESARROLLADOR
-# =========================
-# True: Muestra TODAS las clases en pantalla para pruebas. 
-#       (Las alertas/grabaciones seguirán disparándose SOLO con las armas reales).
-# False: MODO PRODUCCIÓN. Solo dibuja las armas en pantalla. Ignora lo demás.
-MODO_DEBUG = False
-
-# =========================
 # RUTAS BASE
 # =========================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,7 +34,7 @@ os.makedirs(EVIDENCE_DIR, exist_ok=True)
 # Rutas de los modelos neuronales entrenados
 WEAPON_MODEL_PATH = os.path.join(MODELS_DIR, "Modelo_objetos_sospechosos.pt")
 POSE_MODEL_PATH = os.path.join(MODELS_DIR, "yolo11n-pose.pt")
-BEHAVIOR_MODEL_PATH = os.path.join(MODELS_DIR, "behavior_gru.pth")
+BEHAVIOR_MODEL_PATH = os.path.join(MODELS_DIR, "comportamiento.pth")
 
 # =========================
 # VENTANAS TEMPORALES
@@ -88,7 +80,8 @@ VALORES_FABRICA = {
     "cfg_comportamiento": False,
     "cfg_confianza": 0.50,
     "cfg_prebuffer": 10,
-    "cfg_postbuffer": 15
+    "cfg_postbuffer": 15,
+    "cfg_debug": False 
 }
 
 def cargar_configuracion_inicial():
@@ -115,6 +108,7 @@ ACTIVAR_MODELO_COMPORTAMIENTO = bool(_config_disco.get("cfg_comportamiento", Fal
 CONF_WEAPON = float(_config_disco.get("cfg_confianza", 0.50))
 PRE_BUFFER_SECONDS = int(_config_disco.get("cfg_prebuffer", 10))
 POST_BUFFER_SECONDS = int(_config_disco.get("cfg_postbuffer", 15))
+MODO_DEBUG = bool(_config_disco.get("cfg_debug", False))  # 🚨 Se lee del JSON como booleano puro
 
 
 def guardar_configuracion_disco(nuevos_valores):
@@ -132,6 +126,7 @@ def guardar_configuracion_disco(nuevos_valores):
     setattr(modulo, "CONF_WEAPON", float(nuevos_valores["cfg_confianza"]))
     setattr(modulo, "PRE_BUFFER_SECONDS", int(nuevos_valores["cfg_prebuffer"]))
     setattr(modulo, "POST_BUFFER_SECONDS", int(nuevos_valores["cfg_postbuffer"]))
+    setattr(modulo, "MODO_DEBUG", bool(nuevos_valores["cfg_debug"]))  # 🚨 Mantiene actualizada la RAM del módulo
 
 
 def restaurar_valores_fabrica():

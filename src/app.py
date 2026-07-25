@@ -30,7 +30,8 @@ class EstadoSistema:
             "cfg_comportamiento": config.ACTIVAR_MODELO_COMPORTAMIENTO,
             "cfg_confianza": config.CONF_WEAPON,
             "cfg_prebuffer": config.PRE_BUFFER_SECONDS,
-            "cfg_postbuffer": config.POST_BUFFER_SECONDS
+            "cfg_postbuffer": config.POST_BUFFER_SECONDS,
+            "cfg_debug": config.MODO_DEBUG
         }
         
         # Lista compartida de suscriptores web activos (Mismo espacio de memoria)
@@ -95,8 +96,8 @@ def update_config():
     with estado.lock:
         for key in data:
             if key in estado.config_ram:
-                # Conversión técnica estricta según el tipo de dato esperado
-                if key in ["cfg_armas", "cfg_comportamiento"]:
+                # Mapeo estricto: Las tres llaves de interruptores se guardan como Booleanos puros
+                if key in ["cfg_armas", "cfg_comportamiento", "cfg_debug"]:
                     estado.config_ram[key] = bool(data[key])
                 else:
                     estado.config_ram[key] = float(data[key])
@@ -154,6 +155,7 @@ def restore_defaults():
             estado.config_ram["cfg_confianza"] = valores_defecto["cfg_confianza"]
             estado.config_ram["cfg_prebuffer"] = valores_defecto["cfg_prebuffer"]
             estado.config_ram["cfg_postbuffer"] = valores_defecto["cfg_postbuffer"]
+            estado.config_ram["cfg_debug"] = valores_defecto["cfg_debug"]
                 
         estado.emitir_evento_dashboard('system_log', {
             "type": "warn", 

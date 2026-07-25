@@ -42,31 +42,3 @@ def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_
         alertas_por_frame.append(tiene_arma_real)
             
     return results, alertas_por_frame
-
-
-# =========================================================================
-# SUBSISTEMA: ESTIMACIÓN DE POSE E INFRAESTRUCTURA DE SEGUIMIENTO (POSE TRACKING)
-# =========================================================================
-
-def batch_detect_pose(model, frames_list, conf=0.5):
-    """
-    Ejecuta la extracción espacial de esqueleto en lote utilizando persistencia tracking (ByteTrack).
-    Retorna los tensores puros de keypoints para su inyección en clasificadores secuenciales.
-    """
-    if not frames_list:
-        return [], []
-        
-    # Invocación del pipeline de tracking persistente multi-objeto
-    results = model.track(frames_list, conf=conf, persist=True, tracker="bytetrack.yaml", verbose=False)
-    
-    skeletons_data = []
-    
-    for r in results:
-        # Validación de la existencia de la estructura matemática del esqueleto (Matriz X, Y, Conf)
-        if hasattr(r, 'keypoints') and r.keypoints is not None and r.keypoints.data.shape[1] > 0:
-            # Desacoplamiento del tensor de GPU a la memoria compartida del sistema en formato NumPy array
-            skeletons_data.append(r.keypoints.data.cpu().numpy())
-        else:
-            skeletons_data.append(None)
-            
-    return results, skeletons_data
