@@ -5,8 +5,10 @@ Módulo optimizado para inferencia en tiempo real y arquitectura Edge AI por lot
 Responsabilidades:
 - Ejecutar inferencia matricial síncrona por lotes (Batching) en hardware acelerador.
 - Filtrar descriptores y taxonomías de objetos de interés (Armas/Riesgos).
-- Extraer keypoints geométricos bidimensionales mediante tracking persistente.
+- Extraer regiones de interés y etiquetas confirmatorias por canal.
 """
+
+import torch
 
 # =========================================================================
 # SUBSISTEMA: DETECCIÓN DE OBJETOS PELIGROSOS EN LOTE (WEAPON BATCH INFERENCE)
@@ -17,28 +19,43 @@ def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_
     Procesa de forma simultánea múltiples flujos matriciales de video para la detección de armamento.
     Mitiga el overhead de transferencia hacia la memoria de la GPU.
     """
+    # 🚨 SOLUCIÓN BUG 2: Garantizar retorno de tupla homogénea ante listas vacías
     if not frames_list:
-        return []
-        
-    # Extracción de índices enteros de las clases bajo protocolo de alerta (firearm, melee_weapon)
+        return [], []
+
+    # Extracción de índices enteros de las clases bajo protocolo de alerta (ej. firearm, melee_weapon)
     ids_armas = []
-    if clases_alerta:
+    if clases_alerta and hasattr(model, 'names'):
         ids_armas = [id_clase for id_clase, nombre in model.names.items() if nombre in clases_alerta]
 
-    # Gestión de modo depuración o aplicación del filtro restrictivo estricto de clases
+    # Convertir a conjunto hash para búsqueda ultrarrápida O(1)
+    set_ids_armas = set(ids_armas)
+
+    # Gestión de modo depuración o aplicación del filtro restrictivo estricto de clases en el modelo
     filtro_clases = None if modo_debug else (ids_armas if ids_armas else None)
 
-    results = model(frames_list, conf=conf, classes=filtro_clases, verbose=False)
+    # Inferencia en lote con contexto de gradiente desactivado para optimizar VRAM
+    with torch.no_grad():
+        results = model(frames_list, conf=conf, classes=filtro_clases, verbose=False)
     
-    # Evaluación secuencial de la carga de inferencia por cada frame del lote
     alertas_por_frame = []
+
+    # Evaluación secuencial de la carga de inferencia por cada frame del lote
     for r in results:
         tiene_arma_real = False
-        if r.boxes is not None:
+        if r.boxes is not None and len(r.boxes) > 0:
             for cls_id in r.boxes.cls:
-                if int(cls_id) in ids_armas:
+                # Si hay filtro de clases activo, validar contra el conjunto de interés
+                if set_ids_armas:
+                    if int(cls_id) in set_ids_armas:
+                        tiene_arma_real = True
+                        break  # Interrupción por hallazgo confirmatorio mínimo
+                else:
+                    # Si no se definieron clases_alerta, cualquier detección sobre el umbral es válida
                     tiene_arma_real = True
-                    break # Interrupción por hallazgo confirmatorio mínimo
+                    break
+
         alertas_por_frame.append(tiene_arma_real)
-            
+
+    # 🚨 SOLUCIÓN BUG 1: Retorno unificado fuera del bucle FOR
     return results, alertas_por_frame

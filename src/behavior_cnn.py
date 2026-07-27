@@ -1,9 +1,8 @@
 """
 behavior_cnn.py
 
-Pipeline de inferencia perimetral para el modelo de comportamiento CNN + GRU.
-Contiene la definición estructural del modelo para la carga de pesos binarios,
-el muestreo equidistante, el formateo de tensores y la predicción de violencia.
+Pipeline de inferencia perimetral para el modelo de comportamiento CNN + GRU (ViolenceNet).
+Optimizado con preprocesamiento matricial vectorizado en GPU y carga segura de pesos.
 """
 
 import os
@@ -23,7 +22,7 @@ from torchvision.models import (
 class MobileNetFeatureExtractor(nn.Module):
     def __init__(self):
         super().__init__()
-        # Se cargan los mismos pesos base de ImageNet usados en el entrenamiento
+        # Se cargan los pesos base de ImageNet acordes al entrenamiento
         backbone = mobilenet_v3_small(
             weights=MobileNet_V3_Small_Weights.IMAGENET1K_V1
         )
@@ -59,7 +58,7 @@ class ViolenceNet(nn.Module):
         batch_size = x.shape[0]
         seq_len = x.shape[1]
 
-        # Unir batch y tiempo para procesar los cuadros por la CNN por lote
+        # Colapsar batch y tiempo para procesar los fotogramas en lote por la CNN
         x = x.view(
             batch_size * seq_len,
             x.shape[2],
@@ -69,7 +68,7 @@ class ViolenceNet(nn.Module):
 
         features = self.cnn(x)
 
-        # Restaurar la dimensión de secuencia para el análisis temporal del GRU
+        # Restaurar dimensión de secuencia para el análisis temporal de la GRU
         features = features.view(
             batch_size,
             seq_len,
@@ -78,7 +77,7 @@ class ViolenceNet(nn.Module):
 
         gru_out, _ = self.gru(features)
         
-        # Tomar únicamente el estado del último instante temporal (Footprint del clip)
+        # Extraer únicamente el estado oculto del último fotograma de la secuencia
         last_out = gru_out[:, -1, :]
         
         out = self.fc(last_out)
@@ -86,17 +85,29 @@ class ViolenceNet(nn.Module):
 
 
 # =========================================================================
-# PIPELINE DE INFERENCIA EN TIEMPO REAL Y CONTROL DE ENTORNO
+# PIPELINE DE INFERENCIA EN TIEMPO REAL Y PREPROCESAMIENTO VECTORIZADO
 # =========================================================================
 
 def cargar_modelo_violencia(ruta_modelo, dispositivo):
     """
-    Inicializa la red embebida e inyecta los pesos del entrenamiento en el hardware.
+    Instancia la arquitectura ViolenceNet y carga los pesos binarios de forma segura.
     """
+    if not os.path.exists(ruta_modelo):
+        print(f"ERROR_MODELO_COMPORTAMIENTO: NO SE ENCONTRÓ EL ARCHIVO EN -> {ruta_modelo}")
+        return None
+
     try:
-        # Ahora la clase vive en este mismo archivo, por lo que se instancia directamente
         modelo = ViolenceNet()
-        modelo.load_state_dict(torch.load(ruta_modelo, map_location=dispositivo))
+        state_dict = torch.load(ruta_modelo, map_location=dispositivo, weights_only=True)
+        
+        # Flexibilidad ante diferentes formatos de guardado de checkpoints
+        if isinstance(state_dict, dict):
+            if "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
+            elif "model_state_dict" in state_dict:
+                state_dict = state_dict["model_state_dict"]
+
+        modelo.load_state_dict(state_dict)
         modelo.to(dispositivo)
         modelo.eval()
         return modelo
@@ -105,56 +116,48 @@ def cargar_modelo_violencia(ruta_modelo, dispositivo):
         return None
 
 
-def preprocesar_cuadro_cnn(frame):
-    """
-    Adapta un cuadro individual de la cámara a las dimensiones nativas de la CNN.
-    """
-    # Escalar a la dimensión exacta de 224x224 píxeles
-    frame_redimensionado = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
-    
-    # Conversión obligatoria de espacio de color OpenCV (BGR) a PyTorch/PIL (RGB)
-    frame_rgb = cv2.cvtColor(frame_redimensionado, cv2.COLOR_BGR2RGB)
-    
-    # Llevar la matriz de enteros uint8 a flotantes escalados entre 0.0 y 1.0
-    frame_normalizado = frame_rgb.astype(np.float32) / 255.0
-    return frame_normalizado
-
-
 def evaluar_secuencia_violencia(modelo, dispositivo, buffer_fotogramas, umbral_confianza=0.50):
     """
-    Extrae exactamente 16 fotogramas equidistantes del búfer temporal y ejecuta la inferencia.
+    Extrae exactamente 16 fotogramas del búfer temporal y ejecuta la inferencia
+    utilizando preprocesamiento matricial vectorizado de alta velocidad.
     """
     if modelo is None or len(buffer_fotogramas) < 16:
         return "NORMAL", 0.0
 
-    # MUESTREO EQUIDISTANTE: Extraer 16 índices distribuidos de forma uniforme a lo largo del búfer
+    # 1. Muestreo equidistante uniforme de 16 índices
     indices = np.linspace(0, len(buffer_fotogramas) - 1, num=16, dtype=int)
     
-    secuencia_procesada = []
+    # 2. Extracción y apilado en bloque: Forma (16, H, W, C)
+    cuadros_muestreados = []
     for idx in indices:
-        cuadro_procesado = preprocesar_cuadro_cnn(buffer_fotogramas[idx])
-        secuencia_procesada.append(cuadro_procesado)
-    
-    # Convertir a matriz de NumPy: Forma resultante (16, 224, 224, 3)
-    matriz_secuencia = np.array(secuencia_procesada, dtype=np.float32)
-    
-    # Transponer dimensiones para cumplir con el estándar PyTorch (T, H, W, C) -> (T, C, H, W)
-    matriz_transpuesta = np.transpose(matriz_secuencia, (0, 3, 1, 2))
-    
-    # Añadir dimensión de lote (Batch Dim) -> Forma final esperada por ViolenceNet: (1, 16, 3, 224, 224)
-    tensor_entrada = torch.tensor(matriz_transpuesta, dtype=torch.float32).unsqueeze(0)
-    tensor_entrada = tensor_entrada.to(dispositivo)
-    
+        f = buffer_fotogramas[idx]
+        if f.shape[0] != 224 or f.shape[1] != 224:
+            f = cv2.resize(f, (224, 224), interpolation=cv2.INTER_LINEAR)
+        cuadros_muestreados.append(f)
+
+    batch_numpy = np.stack(cuadros_muestreados)
+
+    # 3. Conversión BGR -> RGB creando una copia continua en memoria (.copy())
+    # 🎯 CORRECCIÓN: .copy() elimina las zancadas (strides) negativas para PyTorch
+    batch_rgb = batch_numpy[..., ::-1].copy()
+
+    # 4. Reordenar dimensiones: (T, H, W, C) -> (T, C, H, W)
+    batch_chw = np.transpose(batch_rgb, (0, 3, 1, 2))
+
+    # 5. Transferir uint8 a la GPU y añadir dimensión de Batch -> (1, 16, 3, 224, 224)
+    tensor_uint8 = torch.from_numpy(batch_chw).unsqueeze(0).to(dispositivo)
+
+    # 6. Normalización flotante realizada masivamente en paralelo dentro de la GPU/CUDA
+    tensor_entrada = tensor_uint8.float() / 255.0
+
+    # 7. Inferencia deshabilitando el cálculo de gradientes
     with torch.no_grad():
-        # Ejecutar la inferencia a nivel de hardware
         salida_logits = modelo(tensor_entrada)
-        
-        # Aplicar Softmax para mapear la salida a probabilidades de clase
         probabilidades = torch.softmax(salida_logits, dim=1).squeeze(0)
         
         # Mapeo: Índice 0 = Normal, Índice 1 = Violence
         probabilidad_violencia = probabilidades[1].item()
-        
+
     if probabilidad_violencia >= umbral_confianza:
         return "VIOLENCE", probabilidad_violencia
         

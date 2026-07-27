@@ -24,17 +24,18 @@ class EstadoSistema:
     def __init__(self):
         self.lock = threading.Lock()
         
-        # PARAMETROS SINCRONIZADOS: Se inicializan leyendo directo los valores vigentes de config.py
+        # PARÁMETROS SINCRONIZADOS: Inicialización desde config.py con umbrales desacoplados
         self.config_ram = {
             "cfg_armas": config.ACTIVAR_MODELO_ARMAS,
             "cfg_comportamiento": config.ACTIVAR_MODELO_COMPORTAMIENTO,
-            "cfg_confianza": config.CONF_WEAPON,
+            "cfg_confianza_armas": config.CONF_WEAPON,
+            "cfg_confianza_comportamiento": config.CONF_BEHAVIOR,
             "cfg_prebuffer": config.PRE_BUFFER_SECONDS,
             "cfg_postbuffer": config.POST_BUFFER_SECONDS,
             "cfg_debug": config.MODO_DEBUG
         }
         
-        # Lista compartida de suscriptores web activos (Mismo espacio de memoria)
+        # Lista compartida de suscriptores web activos
         self.suscriptores_activos = []
         # Búfer circular volátil para almacenar los últimos 200 eventos
         self.historial_eventos = deque(maxlen=200)
@@ -42,7 +43,7 @@ class EstadoSistema:
     def emitir_evento_dashboard(self, event_type, data):
         """
         Método de instancia único: Propaga un evento estructurado simultáneamente 
-        a todas las conexiones web compartiendo la misma dirección de memoria RAM.
+        a todas las conexiones web activas.
         """
         with self.lock:
             if event_type == 'system_log':
@@ -59,14 +60,17 @@ class EstadoSistema:
             # Guardar en el búfer de persistencia en caliente
             self.historial_eventos.append(paquete_estructurado)
 
-            # Distribuir a los sockets abiertos de esta instancia
-            for q in list(self.suscriptores_activos):
-                try:
-                    if q.full():
-                        q.get_nowait()
-                    q.put_nowait(paquete_estructurado)
-                except Exception:
-                    pass
+            # Tomar una foto instantánea de la lista de suscriptores para minimizar tiempo de lock
+            suscriptores = list(self.suscriptores_activos)
+
+        # Despacho fuera del lock principal
+        for q in suscriptores:
+            try:
+                if q.full():
+                    q.get_nowait()
+                q.put_nowait(paquete_estructurado)
+            except Exception:
+                pass
 
 
 # Instancia única soberana del estado del sistema
@@ -74,7 +78,7 @@ estado = EstadoSistema()
 
 
 # ==========================================
-# ENDPOINTS WEB Y CONTROL DE PARAMETROS
+# ENDPOINTS WEB Y CONTROL DE PARÁMETROS
 # ==========================================
 @app.route('/')
 def index():
@@ -82,23 +86,27 @@ def index():
     return render_template(
         'index.html',
         camaras=nombres_camaras,
-        config_ram=estado.config_ram  # <--- Esta línea es obligatoria
+        config_ram=estado.config_ram
     )
 
 
 @app.route('/update_config', methods=['POST'])
 def update_config():
     """
-    Actualiza los parámetros del sistema en caliente dentro de la memoria RAM.
-    Los cambios toman efecto inmediato en el siguiente frame del bucle de la IA.
+    Actualiza los parámetros del sistema en caliente dentro de la memoria RAM
+    aplicando casteo estricto por tipo de dato.
     """
     data = request.json
     with estado.lock:
         for key in data:
             if key in estado.config_ram:
-                # Mapeo estricto: Las tres llaves de interruptores se guardan como Booleanos puros
+                # 1. Banderas de control (Booleanas)
                 if key in ["cfg_armas", "cfg_comportamiento", "cfg_debug"]:
                     estado.config_ram[key] = bool(data[key])
+                # 2. Duración de búferes de grabación (Enteros)
+                elif key in ["cfg_prebuffer", "cfg_postbuffer"]:
+                    estado.config_ram[key] = int(float(data[key]))
+                # 3. Umbrales de confianza para modelos (Flotantes)
                 else:
                     estado.config_ram[key] = float(data[key])
                     
@@ -115,11 +123,10 @@ def save_config():
     Guarda los parámetros actuales de la memoria RAM de forma permanente en el archivo físico JSON.
     """
     try:
-        # 1. Tomar una copia rápida de los datos actuales bajo el lock (Operación en nanosegundos)
         with estado.lock:
             datos_a_guardar = dict(estado.config_ram)
             
-        # 2. SEPARACIÓN DE SUBPROCESOS: Escribir físicamente en el disco FUERA del lock
+        # Escribir en el disco en una operación atómica
         config.guardar_configuracion_disco(datos_a_guardar)
         
         estado.emitir_evento_dashboard('system_log', {
@@ -142,17 +149,16 @@ def save_config():
 @app.route('/restore_defaults', methods=['POST'])
 def restore_defaults():
     """
-    Restablece el archivo de configuración y la memoria RAM a los valores originales de fábrica.
+    Restablece el archivo JSON y la memoria RAM a los valores de fábrica.
     """
     try:
-        # 🚨 PRIMERO: Escribir en el disco JSON FUERA del lock para no congelar los hilos de la IA
         valores_defecto = config.restaurar_valores_fabrica()
         
-        # 🚨 SEGUNDO: Entrar al lock solo para el volcado instantáneo en la memoria RAM
         with estado.lock:
             estado.config_ram["cfg_armas"] = valores_defecto["cfg_armas"]
             estado.config_ram["cfg_comportamiento"] = valores_defecto["cfg_comportamiento"]
-            estado.config_ram["cfg_confianza"] = valores_defecto["cfg_confianza"]
+            estado.config_ram["cfg_confianza_armas"] = valores_defecto["cfg_confianza_armas"]
+            estado.config_ram["cfg_confianza_comportamiento"] = valores_defecto["cfg_confianza_comportamiento"]
             estado.config_ram["cfg_prebuffer"] = valores_defecto["cfg_prebuffer"]
             estado.config_ram["cfg_postbuffer"] = valores_defecto["cfg_postbuffer"]
             estado.config_ram["cfg_debug"] = valores_defecto["cfg_debug"]
@@ -164,7 +170,6 @@ def restore_defaults():
         return jsonify({"status": "SUCCESS", "data": valores_defecto, "code": 200})
         
     except Exception as e:
-        # Intentar emitir el log de error de forma segura
         try:
             estado.emitir_evento_dashboard('system_log', {
                 "type": "error", 
@@ -173,23 +178,20 @@ def restore_defaults():
         except Exception:
             pass
         return jsonify({"status": "ERROR", "code": 500})
+
         
 @app.route('/get_initial_state', methods=['GET'])
 def get_initial_state():
     """
-    Devuelve el mapa de estados actual de todas las cámaras activas directamente 
-    desde la memoria del sistema para sincronizar de inmediato las pestañas nuevas.
+    Devuelve el mapa de estados actual de las cámaras sin mantener bloqueado el cerrojo global.
     """
-    # Importación diferida local para evitar colisiones de importación circular
     from main import obtener_mapa_estados_actual
     
-    with estado.lock:
-        try:
-            # Solicitar al núcleo el estado actual de las cámaras
-            mapa_estados = obtener_mapa_estados_actual()
-            return jsonify({"status": "SUCCESS", "data": mapa_estados, "code": 200})
-        except Exception as e:
-            return jsonify({"status": "ERROR", "message": str(e), "code": 500})
+    try:
+        mapa_estados = obtener_mapa_estados_actual()
+        return jsonify({"status": "SUCCESS", "data": mapa_estados, "code": 200})
+    except Exception as e:
+        return jsonify({"status": "ERROR", "message": str(e), "code": 500})
 
 
 # ==========================================
@@ -198,12 +200,11 @@ def get_initial_state():
 @app.route('/stream-dashboard')
 def stream_dashboard():
     """
-    Mantiene un canal de transmisión unidireccional permanente con el index.html.
+    Mantiene la conexión permanente de eventos para el dashboard.
     """
     cola_cliente = queue.Queue(maxsize=2000)
     
     with estado.lock:
-        # Volcar el historial acumulado de esta instancia al cliente recién conectado
         for evento_pasado in estado.historial_eventos:
             cola_cliente.put_nowait(evento_pasado)
             
@@ -232,25 +233,24 @@ def stream_dashboard():
 
 def cerrar_servidor(_sig, _frame):
     print("\nSYS_CORE: INTERRUPCIÓN DE TERMINAL DETECTADA. SIGINT RECIBIDO.")
-    print("SYS_CORE: DETENIENDO MOTOR DE INFERENCIA INTERFACES FLASK KERNEL...")
+    print("SYS_CORE: DETENIENDO MOTOR DE INFERENCIA E INTERFACES FLASK KERNEL...")
     sys.stdout.flush()
     raise KeyboardInterrupt
 
 
 if __name__ == "__main__":
-    import signal
     signal.signal(signal.SIGINT, cerrar_servidor)
     
     t = threading.Thread(
         target=ejecutar_sistema_principal,
-        args=(estado,), # Pasamos la instancia 'estado' por referencia
+        args=(estado,),
         daemon=True,
         name="AI-System-Thread"
     )
     t.start()
 
     print("HTTP_GATEWAY: INTERFAZ DEL SERVIDOR DE CONTROL DESPLEGADA.")
-    print("HTTP_GATEWAY: NODO DE CÓMPUTO LENOVO CORE OPERATIVO EN -> http://localhost:5000")
+    print("HTTP_GATEWAY: NODO DE CÓMPUTO OPERATIVO EN -> http://localhost:5000")
     sys.stdout.flush()
 
     app.run(

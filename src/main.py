@@ -11,6 +11,8 @@ import cv2
 import time
 import atexit
 import torch
+import numpy as np
+from collections import deque
 from ultralytics import YOLO
 
 # Importaciones de módulos del ecosistema core
@@ -21,18 +23,14 @@ from temporal_logic import initialize_windows, update_window
 from recorder import initialize_recording_state, handle_recording
 from streamer import RTSPStreamer
 from visualization import draw_performance_overlay
-
-# Nuevo pipeline integrado CNN + GRU autónomo
 from behavior_cnn import cargar_modelo_violencia, evaluar_secuencia_violencia
-from collections import deque
 
 # Registro global dinámico para permitir la lectura externa de estados en caliente
 _registro_estados_global = {}
 
 
 def ejecutar_sistema_principal(shared_state):
-    # LAZY IMPORT ATÓMICO: Importaciones encapsuladas localmente para mitigar
-    # bloqueos mutuos (Deadlocks) e importaciones circulares en frío con app.py
+    # Importación encapsulada para evitar dependencias circulares con app.py
     from alerts import dispatch_security_alert
 
     if shared_state is None:
@@ -42,12 +40,10 @@ def ejecutar_sistema_principal(shared_state):
     print("SYS_CORE: INICIALIZANDO NÚCLEO INFALIBLE DE INFERENCIAS EDGE AI...")
 
     # ======================================================
-    # 1. INICIALIZACIÓN DE PUNTEROS NEURONALES (DIFERIDOS)
+    # 1. INICIALIZACIÓN DE PUNTEROS NEURONALES Y HARDWARE
     # ======================================================
     weapon_model = None
-    behavior_model = None  # Puntero único para la arquitectura ViolenceNet
-    
-    # Determinar el acelerador de hardware óptimo para las operaciones de tensores
+    behavior_model = None  
     dispositivo_ia = "cuda" if torch.cuda.is_available() else "cpu"
 
     # ======================================================
@@ -56,24 +52,21 @@ def ejecutar_sistema_principal(shared_state):
     cameras, camera_resolutions_raw, camera_fps = initialize_cameras()
     camera_resolutions = {k.upper(): v for k, v in camera_resolutions_raw.items()}
 
-    # ENLACE DE MEMORIA COMPARTIDA: Inyectar la referencia unificada a cada cámara
+    # Enlazar referencia de estado compartido en cada cámara
     for cap_obj in cameras.values():
         cap_obj.shared_state = shared_state
 
     # ======================================================
-    # 2.5 ASIGNACIÓN DE REGISTROS DE MEMORIA VOLÁTIL
+    # 2.5 REGISTROS DE MEMORIA VOLÁTIL POR CANAL
     # ======================================================
-    # Almacena una cola circular con los últimos frames físicos (imágenes a color)
-    # para poder realizar el muestreo equidistante de 16 cuadros. El tamaño 90 
-    # cubre aproximadamente de 3 a 5 segundos de memoria temporal según los FPS.
+    # Búfer circular para secuencias (imágenes reducidas a 224x224)
     historial_secuencias = {cam_name.upper(): deque(maxlen=90) for cam_name in cameras}
 
-    # BLINDAJE ANTI-PARPADEO: Almacena las últimas 12 predicciones booleanas (True/False)
-    # de violencia para estabilizar el estado mediante un filtro de promedio móvil.
+    # Búfer de estabilización de predicciones temporales
     historial_predicciones = {cam_name.upper(): deque(maxlen=12) for cam_name in cameras}
 
     # ======================================================
-    # 3. FILTROS DE MITIGACIÓN Y VENTANAS TEMPORALES
+    # 3. FILTROS DE MITIGACIÓN Y MAQUINAS DE ESTADO
     # ======================================================
     windows_armas = initialize_windows(camera_fps, config.WINDOW_SECONDS)
     alert_state_armas = {cam_name.upper(): False for cam_name in cameras}
@@ -100,7 +93,7 @@ def ejecutar_sistema_principal(shared_state):
     # 5. PROTOCOLO DE DESCONEXIÓN SEGURA (CLEANUP)
     # ======================================================
     def limpieza_segura():
-        print("\nSYS_CORE: SIGNAL_DE_TERMINACIÓN_RECIBIDA. LIBERANDO RECURSOS DE HARDWARE...")
+        print("\nSYS_CORE: SIGNAL DE TERMINACIÓN RECIBIDA. LIBERANDO RECURSOS DE HARDWARE...")
         for cap in cameras.values():
             if hasattr(cap, 'release'): cap.release()
             elif hasattr(cap, 'stop'): cap.stop()
@@ -109,22 +102,26 @@ def ejecutar_sistema_principal(shared_state):
             streamer.cerrar()
             
         cv2.destroyAllWindows()
-        print("SYS_CORE: PROTOCOLO_DE_LIMPIEZA_COMPLETADO. RECURSOS LIBERADOS EN REGLA.")
+        print("SYS_CORE: PROTOCOLO DE LIMPIEZA COMPLETADO. RECURSOS LIBERADOS EN REGLA.")
 
     atexit.register(limpieza_segura)
 
-    # INICIALIZACIÓN UNIFICADA DEL DASHBOARD EN FRÍO
+    # Inicialización del estado en el dashboard
     for cam_name in cameras:
         shared_state.emitir_evento_dashboard('camera_status', {
             "camera": cam_name.lower(), 
             "status": "analyzing"
         })
 
-    shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: BUCLE_DE_INFERENCIA_CONTINUO_DESPLEGADO (MODO_BATCH_ESTABLE)"})
+    shared_state.emitir_evento_dashboard('system_log', {
+        "type": "success", 
+        "message": "NÚCLEO_IA: BUCLE_DE_INFERENCIA_CONTINUO_DESPLEGADO (MODO_BATCH_ESTABLE)"
+    })
+    
     tiempo_anterior = time.time()
 
     # ======================================================
-    # 6. BUCLE PRINCIPAL DE INFERENCIA
+    # 6. BUCLE PRINCIPAL DE INFERENCIA CONTINUA
     # ======================================================
     while True:
         frames_list = []
@@ -143,7 +140,6 @@ def ejecutar_sistema_principal(shared_state):
 
         tiempo_actual = time.time()
         diferencia_tiempo = tiempo_actual - tiempo_anterior
-        
         if diferencia_tiempo <= 0:
             diferencia_tiempo = 0.001
             
@@ -155,33 +151,61 @@ def ejecutar_sistema_principal(shared_state):
         # =========================================================================
         
         # --- CONTROL MODELO DE ARMAS ---
-        if shared_state.config_ram["cfg_armas"]:
+        if shared_state.config_ram.get("cfg_armas", True):
             if weapon_model is None:
-                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: DETECTADO COMANDO DE ACTIVACIÓN. CARGANDO MODELO DE ARMAS (YOLOV8)..."})
-                weapon_model = YOLO(config.WEAPON_MODEL_PATH)
-                shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: MODELO DE ARMAS TOTALMENTE DESPLEGADO EN MEMORIA."})
+                try:
+                    shared_state.emitir_evento_dashboard('system_log', {
+                        "type": "info", 
+                        "message": "NÚCLEO_IA: DETECTADO COMANDO DE ACTIVACIÓN. CARGANDO MODELO DE ARMAS..."
+                    })
+                    weapon_model = YOLO(config.WEAPON_MODEL_PATH)
+                    shared_state.emitir_evento_dashboard('system_log', {
+                        "type": "success", 
+                        "message": "NÚCLEO_IA: MODELO DE ARMAS TOTALMENTE DESPLEGADO EN MEMORIA."
+                    })
+                except Exception as e:
+                    shared_state.emitir_evento_dashboard('system_log', {
+                        "type": "error", 
+                        "message": f"NÚCLEO_IA_ERROR: FALLO AL CARGAR MODELO DE ARMAS -> {str(e).upper()}"
+                    })
         else:
             if weapon_model is not None:
-                shared_state.emitir_evento_dashboard('system_log', {"type": "warn", "message": "NÚCLEO_IA: DETECTADO COMANDO DE DESACTIVACIÓN. LIBERANDO MEMORIA DEL MODELO DE ARMAS..."})
+                shared_state.emitir_evento_dashboard('system_log', {
+                    "type": "warn", 
+                    "message": "NÚCLEO_IA: LIBERANDO MEMORIA DEL MODELO DE ARMAS..."
+                })
                 weapon_model = None
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: RECURSOS DEL MODELO DE ARMAS LIBERADOS CORRECTAMENTE."})
 
         # --- CONTROL MODELO DE COMPORTAMIENTO (CNN + GRU VIOLENCIA) ---
-        if shared_state.config_ram["cfg_comportamiento"]:
+        if shared_state.config_ram.get("cfg_comportamiento", False):
             if behavior_model is None:
-                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: DETECTADO COMANDO DE ACTIVACIÓN. CARGANDO CLASIFICADOR DE VIOLENCIA SECUENCIAL (CNN + GRU)..."})
-                behavior_model = cargar_modelo_violencia(config.BEHAVIOR_MODEL_PATH, dispositivo_ia)
-                if behavior_model is not None:
-                    shared_state.emitir_evento_dashboard('system_log', {"type": "success", "message": "NÚCLEO_IA: PIPELINE DE COMPORTAMIENTO DESPLEGADO CORRECTAMENTE."})
+                try:
+                    shared_state.emitir_evento_dashboard('system_log', {
+                        "type": "info", 
+                        "message": "NÚCLEO_IA: CARGANDO CLASIFICADOR DE VIOLENCIA SECUENCIAL (CNN + GRU)..."
+                    })
+                    behavior_model = cargar_modelo_violencia(config.BEHAVIOR_MODEL_PATH, dispositivo_ia)
+                    if behavior_model is not None:
+                        shared_state.emitir_evento_dashboard('system_log', {
+                            "type": "success", 
+                            "message": "NÚCLEO_IA: PIPELINE DE COMPORTAMIENTO DESPLEGADO CORRECTAMENTE."
+                        })
+                except Exception as e:
+                    shared_state.emitir_evento_dashboard('system_log', {
+                        "type": "error", 
+                        "message": f"NÚCLEO_IA_ERROR: FALLO AL CARGAR MODELO DE COMPORTAMIENTO -> {str(e).upper()}"
+                    })
         else:
             if behavior_model is not None:
-                shared_state.emitir_evento_dashboard('system_log', {"type": "warn", "message": "NÚCLEO_IA: DETECTADO COMANDO DE DESACTIVACIÓN. LIBERANDO PIPELINE DE COMPORTAMIENTO..."})
+                shared_state.emitir_evento_dashboard('system_log', {
+                    "type": "warn", 
+                    "message": "NÚCLEO_IA: LIBERANDO PIPELINE DE COMPORTAMIENTO..."
+                })
                 behavior_model = None
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                shared_state.emitir_evento_dashboard('system_log', {"type": "info", "message": "NÚCLEO_IA: RECURSOS DE COMPORTAMIENTO CNN + GRU LIBERADOS SEGUROS."})
 
         # ==================================================
         # C. PROCESAMIENTO MATRICIAL EN LOTE (BATCH INFERENCE)
@@ -192,9 +216,9 @@ def ejecutar_sistema_principal(shared_state):
         if weapon_model is not None:
             weapon_results, alertas_armas_batch = batch_detect_weapons(
                 weapon_model, frames_list, 
-                conf=shared_state.config_ram["cfg_confianza"], 
+                conf=shared_state.config_ram.get("cfg_confianza_armas", 0.50), 
                 clases_alerta=config.CLASES_ARMAS_ALERTA, 
-                modo_debug=shared_state.config_ram["cfg_debug"]
+                modo_debug=shared_state.config_ram.get("cfg_debug", False)
             )
 
         # ==================================================
@@ -208,80 +232,89 @@ def ejecutar_sistema_principal(shared_state):
             comportamiento_anomalo = False
             nombre_comportamiento = ""
 
-            # Alimentar continuamente la cola temporal de imágenes a color
-            historial_secuencias[cam_upper].append(frame.copy())
+            # 1. Almacenar imagen reducida en el historial para mitigar uso de RAM
+            frame_small = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
+            historial_secuencias[cam_upper].append(frame_small)
 
-            # --- FILTRADO DE SEGURIDAD: DETECCIÓN DE ARMAS ---
+            # --- DETECCIÓN DE ARMAS ---
             if weapon_model is not None:
                 weapon_in_frame = alertas_armas_batch[i] if i < len(alertas_armas_batch) else False
                 if w_res and len(w_res.boxes) > 0:
                     frame = w_res.plot(img=frame)
 
-            # --- PROCESAMIENTO TEMPORAL: ANÁLISIS DE COMPORTAMIENTO CNN + GRU ---
+            # --- ANÁLISIS DE COMPORTAMIENTO HOSTIL ---
             if behavior_model is not None:
-                clase_comportamiento, score = evaluar_secuencia_violencia(
-                    behavior_model, dispositivo_ia, 
-                    historial_secuencias[cam_upper], 
-                    umbral_confianza=0.55  # Sutil incremento para mitigar falsos positivos directos
-                )
-                
-                # Registrar el resultado binario en el búfer de suavizado temporal
-                es_violencia_frame = (clase_comportamiento == "VIOLENCE")
-                historial_predicciones[cam_upper].append(es_violencia_frame)
-                
-                # EVALUACIÓN DE HISTÉRESIS: Calcular la densidad de alertas en la ventana temporal
-                alertas_activas = sum(historial_predicciones[cam_upper])
-                total_evaluaciones = len(historial_predicciones[cam_upper])
-                
-                # Factor de activación industrial: Al menos el 65% de los últimos cuadros deben ser positivos
-                if total_evaluaciones >= 6 and (alertas_activas / total_evaluaciones) >= 0.65:
-                    comportamiento_anomalo = True
-                    nombre_comportamiento = "VIOLENCIA"
+                modo_debug = shared_state.config_ram.get("cfg_debug", False)
+                umbral_actual = shared_state.config_ram.get("cfg_confianza_comportamiento", 0.50)
+
+                # Submuestreo: Inferencia cada 3 cuadros para liberar CPU/GPU
+                if len(historial_secuencias[cam_upper]) % 3 == 0:
+                    clase_comportamiento, score = evaluar_secuencia_violencia(
+                        behavior_model, 
+                        dispositivo_ia, 
+                        historial_secuencias[cam_upper], 
+                        umbral_confianza=umbral_actual
+                    )
+                    es_violencia_frame = (clase_comportamiento == "VIOLENCE")
                     
-                    # 1. Dibujar rectángulo de fondo semi-transparente oscuro en la parte superior del frame
+                    if modo_debug:
+                        print(f"[DEBUG - {cam_upper}] Estado: {clase_comportamiento} | Score: {score:.4f} | Umbral: {umbral_actual}")
+                else:
+                    es_violencia_frame = historial_predicciones[cam_upper][-1] if len(historial_predicciones[cam_upper]) > 0 else False
+
+                if modo_debug:
+                    if es_violencia_frame:
+                        comportamiento_anomalo = True
+                        nombre_comportamiento = "VIOLENCIA"
+                else:
+                    historial_predicciones[cam_upper].append(es_violencia_frame)
+                    alertas_activas = sum(historial_predicciones[cam_upper])
+                    total_evaluaciones = len(historial_predicciones[cam_upper])
+                    
+                    if total_evaluaciones >= 4 and (alertas_activas / total_evaluaciones) >= 0.50:
+                        comportamiento_anomalo = True
+                        nombre_comportamiento = "VIOLENCIA"
+
+                # Renderizado optimizado del banner superior
+                if comportamiento_anomalo:
                     h_img, w_img = frame.shape[:2]
-                    overlay_banner = frame.copy()
-                    cv2.rectangle(overlay_banner, (0, 0), (w_img, 45), (15, 16, 18), -1)
-                    # Aplicar transparencia (Alfa = 0.75) para no tapar el video por completo
-                    cv2.addWeighted(overlay_banner, 0.75, frame, 0.25, 0, frame)
-                    
-                    # 2. Inyectar tipografía ejecutiva limpia (Escala baja, grosor moderado)
+                    roi = frame[0:45, 0:w_img]
+                    # Aplicar atenuación del 75% usando multiplicación de escala atómica en C++
+                    frame[0:45, 0:w_img] = cv2.convertScaleAbs(roi, alpha=0.25)
+
                     cv2.putText(
                         frame, 
-                        f"ALERTA PERIMETRAL: INCIDENTE DE CONDUCTA HOSTIL CONFIRMADO", 
+                        "ALERTA: INCIDENTE DE CONDUCTA HOSTIL CONFIRMADO", 
                         (20, 28), 
                         cv2.FONT_HERSHEY_SIMPLEX, 
                         0.55, 
-                        (68, 23, 255),  # Color rojo/alerta industrial puro (BGR: 255, 23, 68)
+                        (68, 23, 255),  # BGR: Rojo
                         2, 
                         cv2.LINE_AA
                     )
 
-            # --- ANÁLISIS LÓGICO TEMPORAL (Supresión de falsos positivos) ---
+            # --- ANÁLISIS LÓGICO TEMPORAL DE ARMAS ---
             alerta_arma = update_window(
                 cam_upper, weapon_in_frame, windows_armas, 
                 config.ACTIVATION_THRESHOLD, alert_state_armas
             )
 
-            # RESOLUCIÓN DE VARIABLES DE CONTROL INTERNO
+            # Resolución de disparadores de alerta
             alert_triggered = (alerta_arma if weapon_model is not None else False) or comportamiento_anomalo
             amenaza_presente = (weapon_in_frame if weapon_model is not None else False) or comportamiento_anomalo
 
-            # --- OBTENCIÓN DEL ESTADO ANTES DE LA EVALUACIÓN MULTIMEDIA ---
             estaba_grabando = recording_state[cam_upper]["recording"]
 
-            # --- PIPELINE DE PERSISTENCIA MULTIMEDIA (MÁQUINA DE ESTADOS) ---
+            # Pipeline de persistencia y volcado de video
             handle_recording(
                 cam_upper, frame, camera_resolutions, recording_state,
-                shared_state.config_ram["cfg_postbuffer"], alert_triggered,  amenaza_presente, shared_state=shared_state
+                shared_state.config_ram.get("cfg_postbuffer", 15), 
+                alert_triggered, amenaza_presente, shared_state=shared_state
             )
 
-            # --- OBTENCIÓN DEL ESTADO POST-EVALUACIÓN MULTIMEDIA ---
             esta_grabando_actualmente = recording_state[cam_upper]["recording"]
 
-            # =========================================================================
-            # SINCRONIZACIÓN SOBERANA DEL DASHBOARD CON EL ESTADO REAL DE GRABACIÓN
-            # =========================================================================
+            # --- SINCRONIZACIÓN CON EL DASHBOARD WEB Y TELEGRAM ---
             if esta_grabando_actualmente and not estaba_grabando:
                 shared_state.emitir_evento_dashboard('camera_status', {
                     "camera": cam_upper.lower(), 
@@ -314,51 +347,45 @@ def ejecutar_sistema_principal(shared_state):
                     "status": "analyzing"
                 })
 
-            # --- CONTROL MULTIMEDIA Y SALIDA RTSP ---
-            # --- CONTROL DE VISUALIZACIÓN DE TELEMETRÍA (MODO DEBUG) ---
-            if shared_state.config_ram["cfg_debug"]:
+            # Overlay de rendimiento en modo Debug
+            if shared_state.config_ram.get("cfg_debug", False):
                 frame = draw_performance_overlay(frame, fps_real)
 
-            # INYECCIÓN PERMANENTE DE METADATOS (Nombre Cámara, Fecha y Hora)
-            # Formato resultante: CAM: WEBCAM  |  18/07/2026  ──  09:47:00
+            # Estampado estilo CCTV (Metadatos)
             cadena_tiempo_actual = time.strftime("%d/%m/%Y  ──  %H:%M:%S")
             texto_metadatos = f"CAM: {cam_upper}  |  {cadena_tiempo_actual}"
             
             h_img, w_img = frame.shape[:2]
-            
-            # Dibujar el fondo oscuro adaptativo (un poco más ancho para albergar el nombre)
             cv2.rectangle(frame, (10, h_img - 30), (460, h_img - 5), (10, 11, 13), -1)
-            
-            # Estampar la cadena unificada estilo CCTV de alta gama
             cv2.putText(
                 frame, 
                 texto_metadatos, 
                 (20, h_img - 12), 
                 cv2.FONT_HERSHEY_SIMPLEX, 
                 0.45, 
-                (227, 230, 235),  # Color var(--text-main) en BGR
+                (227, 230, 235), 
                 1, 
                 cv2.LINE_AA
             )
 
-            # Enviar el frame procesado al canal RTSP correspondiente
+            # Transmisión RTSP
             streamers[cam_upper].enviar_frame(frame)
             
-            # ACTUALIZACIÓN DE FOTOGRAFÍA GLOBAL: Guarda el estado exacto de este frame
+            # Actualización corregida de la fotografía global de estado
             global _registro_estados_global
-            # Comprobación de error prioritaria mapeada desde cameras.py
-            if hasattr(cameras[cam_name.lower()], 'estado_error_enviado') and cameras[cam_name.lower()].estado_error_enviado:
-                _registro_estados_global[cam_name.lower()] = "error"
+            cam_key_lower = cam_upper.lower()
+            
+            if hasattr(cameras.get(cam_key_lower), 'estado_error_enviado') and cameras[cam_key_lower].estado_error_enviado:
+                _registro_estados_global[cam_key_lower] = "error"
             elif esta_grabando_actualmente:
-                _registro_estados_global[cam_name.lower()] = "detecting"
+                _registro_estados_global[cam_key_lower] = "detecting"
             else:
-                _registro_estados_global[cam_name.lower()] = "analyzing"
+                _registro_estados_global[cam_key_lower] = "analyzing"
 
 
 def obtener_mapa_estados_actual():
     """
-    Punto de acceso seguro para que Flask consulte el estado en tiempo real 
-    de las cámaras sin intervenir en el bucle principal de inferencia.
+    Devuelve una copia segura para hilos del estado en tiempo real de las cámaras.
     """
     global _registro_estados_global
-    return _registro_estados_global
+    return dict(_registro_estados_global)

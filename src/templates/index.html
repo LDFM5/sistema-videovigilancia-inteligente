@@ -437,11 +437,11 @@
         <div class="config-section">
             <h3>Modelos Neuronal Espacial</h3>
             <div class="control-row">
-                <span>Detección de Armamento (YOLO)</span>
+                <span>Modelo de objetos peligrosos</span>
                 <input type="checkbox" id="cfg_armas" {% if config_ram['cfg_armas'] %}checked{% endif %} onchange="updateConfig()">
             </div>
             <div class="control-row">
-                <span>Análisis del Comportamiento (GRU)</span>
+                <span>Modelo de comportamiento</span>
                 <input type="checkbox" id="cfg_comportamiento" {% if config_ram['cfg_comportamiento'] %}checked{% endif %} onchange="updateConfig()">
             </div>
             <div class="control-row" style="margin-top: 4px; border-top: 1px solid #1c1f24; padding-top: 8px;">
@@ -452,11 +452,28 @@
 
         <div class="config-section">
             <h3>Parámetros de Umbral</h3>
+            
+            <!-- 🎯 UMBRAL INDEPENDIENTE: DETECCIÓN DE ARMAS -->
             <div class="control-row">
-                <span>Confianza del Filtro</span>
-                <input type="number" id="num_confianza" class="input-number-precise" min="0.1" max="0.9" step="0.05" value="{{ '%0.2f' | format(config_ram['cfg_confianza'] | float) }}" onchange="syncInput('cfg_confianza', this.value); updateConfig()">
+                <span>Confianza Armas</span>
+                <input type="number" id="num_confianza_armas" class="input-number-precise" min="0.1" max="0.9" step="0.05" 
+                    value="{{ '%0.2f' | format(config_ram['cfg_confianza_armas'] | float) }}" 
+                    onchange="syncInput('cfg_confianza_armas', this.value); updateConfig()">
             </div>
-            <input type="range" id="cfg_confianza" min="0.1" max="0.9" step="0.05" value="{{ config_ram['cfg_confianza'] }}" oninput="syncInput('num_confianza', this.value); updateConfig()">
+            <input type="range" id="cfg_confianza_armas" min="0.1" max="0.9" step="0.05" 
+                value="{{ config_ram['cfg_confianza_armas'] }}" 
+                oninput="syncInput('num_confianza_armas', this.value); updateConfig()">
+
+            <!-- 🎯 UMBRAL INDEPENDIENTE: COMPORTAMIENTO HOSTIL -->
+            <div class="control-row" style="margin-top: 12px;">
+                <span>Confianza Comportamiento</span>
+                <input type="number" id="num_confianza_comportamiento" class="input-number-precise" min="0.1" max="0.9" step="0.05" 
+                    value="{{ '%0.2f' | format(config_ram['cfg_confianza_comportamiento'] | float) }}" 
+                    onchange="syncInput('cfg_confianza_comportamiento', this.value); updateConfig()">
+            </div>
+            <input type="range" id="cfg_confianza_comportamiento" min="0.1" max="0.9" step="0.05" 
+                value="{{ config_ram['cfg_confianza_comportamiento'] }}" 
+                oninput="syncInput('num_confianza_comportamiento', this.value); updateConfig()">
         </div>
 
         <div class="config-section">
@@ -549,7 +566,8 @@
         }
 
         function syncInput(targetId, value) {
-            document.getElementById(targetId).value = value;
+            const el = document.getElementById(targetId);
+            if (el) el.value = value;
         }
 
         let terminalAbierta = true;
@@ -568,7 +586,7 @@
             }
         }
 
-        // Forzar endpoints a los iframes de MediaMTX
+        // Asignación de endpoints a los iframes de MediaMTX
         document.querySelectorAll("iframe").forEach(ifr => {
             const camName = ifr.dataset.cam;
             if (camName) {
@@ -578,7 +596,8 @@
 
         function toggleFocus(camName) {
             if (!camName) return;
-            const card = document.querySelector(`[id*="${camName.toLowerCase().trim()}"]`);
+            const clean = camName.toLowerCase().trim();
+            const card = document.getElementById(`card-${clean}`);
             if (!card) return;
             
             if (!card.classList.contains("focus-mode")) {
@@ -591,15 +610,18 @@
         }
 
         /* =========================================================================
-           PASARELA DE CONTROL: ENVÍO DE PARÁMETROS EN TIEMPO REAL AL BACKEND
-           ========================================================================= */
+        PASARELA DE CONTROL: ENVÍO DE PARÁMETROS EN TIEMPO REAL AL BACKEND
+        ========================================================================= */
 
         function updateConfig() {
             const payload = {
                 "cfg_armas": document.getElementById('cfg_armas').checked,
                 "cfg_comportamiento": document.getElementById('cfg_comportamiento').checked,
-                "cfg_debug": document.getElementById('cfg_debug').checked, // 🚨 Sincronización RAM
-                "cfg_confianza": parseFloat(document.getElementById('cfg_confianza').value),
+                "cfg_debug": document.getElementById('cfg_debug').checked,
+                
+                "cfg_confianza_armas": parseFloat(document.getElementById('cfg_confianza_armas').value),
+                "cfg_confianza_comportamiento": parseFloat(document.getElementById('cfg_confianza_comportamiento').value),
+                
                 "cfg_prebuffer": parseInt(document.getElementById('cfg_prebuffer').value),
                 "cfg_postbuffer": parseInt(document.getElementById('cfg_postbuffer').value)
             };
@@ -636,30 +658,30 @@
                 if (resData.code === 200 && resData.data) {
                     const def = resData.data;
                     
-                    // Sincronizar selectores booleanos (Feature Flags)
+                    // Sincronizar interruptores
                     document.getElementById('cfg_armas').checked = def.cfg_armas;
                     document.getElementById('cfg_comportamiento').checked = def.cfg_comportamiento;
                     document.getElementById('cfg_debug').checked = def.cfg_debug;
                     
-                    // Sincronizar umbral de confianza (Flotante)
-                    const confianzaFlotante = parseFloat(def.cfg_confianza);
-                    document.getElementById('cfg_confianza').value = confianzaFlotante;
-                    document.getElementById('num_confianza').value = confianzaFlotante.toFixed(2);
-                    
-                    // Sincronizar buffer de pre-registro (Entero)
-                    const prebufferEntero = parseInt(def.cfg_prebuffer);
-                    document.getElementById('cfg_prebuffer').value = prebufferEntero;
-                    document.getElementById('num_prebuffer').value = prebufferEntero;
-                    
-                    // Sincronizar buffer de post-registro (Entero)
-                    const postbufferEntero = parseInt(def.cfg_postbuffer);
-                    document.getElementById('cfg_postbuffer').value = postbufferEntero;
-                    document.getElementById('num_postbuffer').value = postbufferEntero;
-                    
-                    // Notificar al backend de inmediato los nuevos cambios en la memoria RAM de inferencia
-                    updateConfig();
+                    // Sincronizar umbral de armas
+                    const confArmas = parseFloat(def.cfg_confianza_armas);
+                    document.getElementById('cfg_confianza_armas').value = confArmas;
+                    document.getElementById('num_confianza_armas').value = confArmas.toFixed(2);
 
-                    // Cerrar el panel lateral de configuraciones
+                    // Sincronizar umbral de comportamiento
+                    const confComp = parseFloat(def.cfg_confianza_comportamiento);
+                    document.getElementById('cfg_confianza_comportamiento').value = confComp;
+                    document.getElementById('num_confianza_comportamiento').value = confComp.toFixed(2);
+                    
+                    // Sincronizar búferes
+                    const prebuffer = parseInt(def.cfg_prebuffer);
+                    document.getElementById('cfg_prebuffer').value = prebuffer;
+                    document.getElementById('num_prebuffer').value = prebuffer;
+                    
+                    const postbuffer = parseInt(def.cfg_postbuffer);
+                    document.getElementById('cfg_postbuffer').value = postbuffer;
+                    document.getElementById('num_postbuffer').value = postbuffer;
+
                     toggleSidebar();
                 }
             })
@@ -667,20 +689,19 @@
         }
 
         /* =========================================================================
-           NÚCLEO DE ACTUALIZACIÓN EN TIEMPO REAL (TELEMETRÍA DE ALTA FIDELIDAD)
-           ========================================================================= */
+        NÚCLEO DE ACTUALIZACIÓN EN TIEMPO REAL
+        ========================================================================= */
         
         function updateCameraState(camName, state) {
             if (!camName || !state) return;
-            
             const cleanName = camName.toLowerCase().trim();
             
-            const card = document.querySelector(`[id*="${cleanName}"]`);
-            const textSpan = document.querySelector(`[id*="status-text-${cleanName}"]`);
-            const overlay = document.querySelector(`[id*="overlay-error-${cleanName}"]`);
+            // 🚀 Búsqueda directa por ID
+            const card = document.getElementById(`card-${cleanName}`);
+            const textSpan = document.getElementById(`status-text-${cleanName}`);
+            const overlay = document.getElementById(`overlay-error-${cleanName}`);
             
             if (!card || !textSpan) {
-                console.warn(`SISTEMA_DASHBOARD: No se localizó el contenedor para la fuente: ${cleanName}`);
                 return;
             }
 
@@ -726,6 +747,12 @@
 
             logLine.innerHTML = `<span class="timestamp">${timeStr}</span> ── ${prefix}${message.toUpperCase()}`;
             feed.appendChild(logLine);
+
+            // 🧹 Limitar historial visual a un máximo de 100 renglones
+            while (feed.childNodes.length > 100) {
+                feed.removeChild(feed.firstChild);
+            }
+
             feed.scrollTop = feed.scrollHeight;
         }
 
@@ -742,11 +769,16 @@
             alertItem.innerHTML = `<span>${text.toUpperCase()}</span><span class="time">${timeStr}</span>`;
             
             feed.insertBefore(alertItem, feed.firstChild);
+
+            // 🧹 Limitar máximo de alertas visibles en pantalla a 50
+            while (feed.childNodes.length > 50) {
+                feed.removeChild(feed.lastChild);
+            }
         }
 
         /* =========================================================================
-           SINCRONIZACIÓN INICIAL: RECUPERACIÓN DE ESTADOS EN FRÍO AL CARGAR
-           ========================================================================= */
+        SINCRONIZACIÓN INICIAL AL CARGAR LA PÁGINA
+        ========================================================================= */
 
         function sincronizarEstadoInicial() {
             fetch('/get_initial_state')
@@ -755,8 +787,7 @@
                     if (resData.code === 200 && resData.data) {
                         const mapa = resData.data;
                         for (const camName in mapa) {
-                            const estadoActual = mapa[camName];
-                            updateCameraState(camName, estadoActual);
+                            updateCameraState(camName, mapa[camName]);
                         }
                     }
                 })
@@ -766,7 +797,7 @@
         document.addEventListener("DOMContentLoaded", sincronizarEstadoInicial);
 
         // =========================================================================
-        // PROTOCOLO DE CONEXIÓN SSE CON FILTRADO ROBUSTO DE CADENAS
+        // PROTOCOLO SSE
         // =========================================================================
         const eventSource = new EventSource('/stream-dashboard');
 
@@ -774,12 +805,8 @@
             try {
                 if (!e.data) return;
                 
-                const deSerialized = e.data.trim();
-                const rawData = JSON.parse(deSerialized);
-                
-                if (!rawData || !rawData.tipo_evento || rawData.tipo_evento === 'ping') {
-                    return;
-                }
+                const rawData = JSON.parse(e.data.trim());
+                if (!rawData || !rawData.tipo_evento || rawData.tipo_evento === 'ping') return;
 
                 const payload = rawData.contenido;
 
@@ -793,7 +820,7 @@
                     addCriticalAlert(payload.message);
                 }
             } catch (err) {
-                // Manejo silencioso de pings y formateos vacíos
+                // Silenciar pings vacíos
             }
         });
 
@@ -804,4 +831,3 @@
         };
     </script>
 </body>
-</html>
