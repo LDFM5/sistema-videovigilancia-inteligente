@@ -32,6 +32,8 @@ class CameraStream:
 
         # Estructuras de memoria compartida
         self.latest_frame = None
+        self.latest_frame_id = 0
+        self.latest_frame_time = None
         self.lock = threading.Lock()
         self.running = True
         self.estado_error_enviado = False
@@ -146,6 +148,8 @@ class CameraStream:
 
             with self.lock:
                 self.latest_frame = frame_resized
+                self.latest_frame_id += 1
+                self.latest_frame_time = time.monotonic()
 
     # ======================================================
     # LECTURA RÁPIDA (MEMORIA RAM COMPARTIDA)
@@ -154,7 +158,12 @@ class CameraStream:
         with self.lock:
             if self.latest_frame is None:
                 return False, None
-            return True, self.latest_frame.copy()
+            return (
+                True,
+                self.latest_frame.copy(),
+                self.latest_frame_id,
+                self.latest_frame_time,
+            )
 
     # ======================================================
     # LIBERACIÓN SEGURA DE RECURSOS

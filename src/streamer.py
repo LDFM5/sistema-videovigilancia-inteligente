@@ -113,15 +113,32 @@ class RTSPStreamer:
                 "message": f"TUBO_FFMPEG: INYECCIÓN DE FLUJO ESTABLECIDA EN CANAL: {self.cam_name}"
             })
 
+        interval = 1.0 / max(1.0, float(self.fps))
+        next_write_time = time.monotonic()
+        latest_frame = None
+
         while self.running:
+            now = time.monotonic()
+            timeout = max(0.0, min(0.1, next_write_time - now))
             try:
-                frame = self.frame_queue.get(timeout=0.1)
+                latest_frame = self.frame_queue.get(timeout=timeout)
+                # Si llegaron varios frames entre dos pulsos, conservar solo
+                # el más reciente para no acumular latencia.
+                while True:
+                    latest_frame = self.frame_queue.get_nowait()
             except queue.Empty:
+                pass
+
+            if not self.running:
+                break
+
+            now = time.monotonic()
+            if latest_frame is None or now < next_write_time:
                 continue
 
             try:
                 if self.process and self.process.stdin:
-                    self.process.stdin.write(frame.tobytes())
+                    self.process.stdin.write(latest_frame.tobytes())
                     self.process.stdin.flush()
             except (BrokenPipeError, OSError, Exception) as e:
                 if self.shared_state:
@@ -134,6 +151,12 @@ class RTSPStreamer:
                         "message": f"NÚCLEO_FLUJO_RTSP: TUBERÍA ROTA EN CANAL '{self.cam_name}' -> REF: {str(e).upper()}"
                     })
                 break
+
+            # Mantener 15 pulsos reales por segundo. Si FFmpeg se bloqueó, no
+            # enviar una ráfaga atrasada: retomar desde el reloj actual.
+            next_write_time += interval
+            if next_write_time < now:
+                next_write_time = now + interval
 
     # ==========================================================
     # RECEPCIÓN Y ENCOLAMIENTO DE FOTOGRAMAS

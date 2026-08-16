@@ -9,22 +9,116 @@ import os
 import time
 import cv2
 import threading
+import queue
+import shutil
+import subprocess
 from collections import deque
 from config import EVIDENCE_DIR, RECORDING_FPS
 from telegram_bot import send_video_sync
+
+
+_EVIDENCE_QUEUE = queue.Queue(maxsize=16)
+_EVIDENCE_WORKERS_LOCK = threading.Lock()
+_EVIDENCE_WORKERS_STARTED = False
+_FFMPEG_ENCODER = None
+_FFMPEG_ENCODER_LOCK = threading.Lock()
+
+
+def _detectar_encoder_ffmpeg():
+    """Obtiene codificadores H.264 disponibles, priorizando hardware."""
+    global _FFMPEG_ENCODER
+
+    with _FFMPEG_ENCODER_LOCK:
+        if _FFMPEG_ENCODER is not None:
+            return _FFMPEG_ENCODER
+
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            _FFMPEG_ENCODER = False
+            return None
+
+        try:
+            result = subprocess.run(
+                [ffmpeg_path, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            encoders = result.stdout
+            candidates = tuple(
+                candidate
+                for candidate in ("h264_nvenc", "h264_qsv", "h264_amf")
+                if candidate in encoders
+            )
+            _FFMPEG_ENCODER = candidates + ("libx264",)
+            return _FFMPEG_ENCODER
+        except Exception:
+            pass
+
+        _FFMPEG_ENCODER = ("libx264",)
+        return _FFMPEG_ENCODER
 
 
 def _comprimir_video(input_path, output_path, shared_state):
     """
     Transcodifica el video para reducir su tamaño manteniendo la tasa de tiempo real.
     """
+    target_width, target_height = 640, 360
+    fps_salida = max(1.0, RECORDING_FPS / 2.0)
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    encoder_candidates = _detectar_encoder_ffmpeg()
+    if ffmpeg_path and encoder_candidates:
+        for encoder_name in encoder_candidates:
+            command = [
+                ffmpeg_path,
+                "-y",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-i", input_path,
+                "-vf", f"scale={target_width}:{target_height}:flags=fast_bilinear,fps={fps_salida}",
+                "-an",
+                "-c:v", encoder_name,
+                "-b:v", "700k",
+                "-maxrate", "900k",
+                "-bufsize", "1400k",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                output_path,
+            ]
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    timeout=300,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if (
+                    result.returncode == 0
+                    and os.path.exists(output_path)
+                    and os.path.getsize(output_path) > 0
+                ):
+                    # Recordar el encoder que realmente abrió el dispositivo;
+                    # las siguientes evidencias no repetirán intentos fallidos.
+                    global _FFMPEG_ENCODER
+                    _FFMPEG_ENCODER = (encoder_name,)
+                    return output_path
+            except Exception:
+                pass
+
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+
+    # Fallback compatible cuando FFmpeg no está instalado o el codificador de
+    # hardware anunciado no puede abrir el dispositivo.
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         return output_path
 
-    target_width, target_height = 640, 360
-    fps_salida = max(1.0, RECORDING_FPS / 2.0)
-    
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps_salida, (target_width, target_height))
 
@@ -83,49 +177,165 @@ def _procesar_y_subir_evidencia(filepath, caption, shared_state):
                 pass
 
 
+def _evidence_worker():
+    while True:
+        filepath, caption, shared_state = _EVIDENCE_QUEUE.get()
+        try:
+            _procesar_y_subir_evidencia(filepath, caption, shared_state)
+        finally:
+            _EVIDENCE_QUEUE.task_done()
+
+
+def _iniciar_workers_evidencia():
+    global _EVIDENCE_WORKERS_STARTED
+
+    with _EVIDENCE_WORKERS_LOCK:
+        if _EVIDENCE_WORKERS_STARTED:
+            return
+
+        for index in range(2):
+            threading.Thread(
+                target=_evidence_worker,
+                daemon=True,
+                name=f"EvidenceWorker-{index + 1}",
+            ).start()
+        _EVIDENCE_WORKERS_STARTED = True
+
+
+def _encolar_evidencia(filepath, caption, shared_state):
+    _iniciar_workers_evidencia()
+    try:
+        _EVIDENCE_QUEUE.put_nowait((filepath, caption, shared_state))
+        return True
+    except queue.Full:
+        if shared_state:
+            shared_state.emitir_evento_dashboard('system_log', {
+                "type": "error",
+                "message": "COLA_EVIDENCIA: CAPACIDAD AGOTADA; EL VIDEO QUEDÓ GUARDADO LOCALMENTE.",
+            })
+        return False
+
+
 def initialize_recording_state(cameras, pre_buffer_seconds):
     """
     Inicializa los buffers y los registros de marcas de tiempo por cámara.
+
+    El pre-búfer se limita por tiempo real y no por una cantidad estimada de
+    fotogramas. Esto evita que su duración cambie cuando el ciclo de inferencia
+    trabaja a una tasa distinta de RECORDING_FPS.
     """
     state = {}
     for cam_name in cameras:
         cam_upper = cam_name.upper()
-        buffer_size = max(1, int(RECORDING_FPS * pre_buffer_seconds))
         state[cam_upper] = {
             "recording": False,
             "writer": None,
-            "frame_buffer": deque(maxlen=buffer_size),
+            "frame_buffer": deque(),
+            "pre_buffer_seconds": max(0.0, float(pre_buffer_seconds)),
+            "next_prebuffer_time": None,
             "post_buffer_start_time": None,
-            "last_frame_time": 0.0,  # 🎯 Marca de tiempo para regular la tasa de escrituras
+            "next_frame_time": None,
+            "last_recorded_frame": None,
             "current_file": None,
             "lock": threading.Lock()
         }
     return state
 
 
-def _volcar_buffer_asincrono(writer, buffer_frames, lock):
+def _agregar_al_prebuffer(state, timestamp, frame, force=False):
     """
-    Escribe el pre-búfer de forma progresiva sin bloquear el hilo principal.
+    Conserva frames con su instante de captura y elimina los que ya quedaron
+    fuera de la ventana temporal configurada.
     """
-    for b_frame in buffer_frames:
-        with lock:
-            if writer is not None and writer.isOpened():
-                writer.write(b_frame)
-        time.sleep(0.001)  # Micro-pausa para ceder el control del bus de CPU
+    interval = 1.0 / RECORDING_FPS
+    next_sample_time = state["next_prebuffer_time"]
+
+    if next_sample_time is None:
+        next_sample_time = timestamp
+
+    if timestamp >= next_sample_time:
+        state["frame_buffer"].append((timestamp, frame.copy()))
+        while next_sample_time <= timestamp:
+            next_sample_time += interval
+        state["next_prebuffer_time"] = next_sample_time
+    elif force:
+        # El frame que dispara la alerta debe quedar incluido aunque haya
+        # llegado entre dos muestras regulares del pre-búfer.
+        state["frame_buffer"].append((timestamp, frame.copy()))
+
+    cutoff = timestamp - state["pre_buffer_seconds"]
+
+    while state["frame_buffer"] and state["frame_buffer"][0][0] < cutoff:
+        state["frame_buffer"].popleft()
 
 
-def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_buffer_seconds, alert_triggered, amenaza_presente, shared_state=None):
+def _volcar_buffer_ordenado(writer, timed_frames, fps):
     """
-    Máquina de estados determinista para la persistencia de video de seguridad.
-    Garantiza una tasa constante de 15 FPS regulando el tiempo transcurrido
-    y duplicando fotogramas si la IA sufre caídas de FPS.
+    Convierte frames con timestamps variables a una secuencia CFR ordenada.
+
+    Para cada instante de salida toma el frame más reciente disponible. Todo el
+    pre-búfer se escribe antes de aceptar video nuevo, por lo que nunca puede
+    intercalarse el pasado con el presente.
+    """
+    if not timed_frames:
+        return None, None
+
+    interval = 1.0 / fps
+    next_frame_time = timed_frames[0][0]
+    last_timestamp = timed_frames[-1][0]
+    source_index = 0
+    source_frame = timed_frames[0][1]
+
+    while next_frame_time <= last_timestamp:
+        while (
+            source_index + 1 < len(timed_frames)
+            and timed_frames[source_index + 1][0] <= next_frame_time
+        ):
+            source_index += 1
+            source_frame = timed_frames[source_index][1]
+
+        writer.write(source_frame)
+        next_frame_time += interval
+
+    return next_frame_time, timed_frames[-1][1]
+
+
+def _escribir_hasta_timestamp(writer, state, timestamp):
+    """Rellena la línea de tiempo CFR hasta el instante del frame actual."""
+    next_frame_time = state["next_frame_time"]
+    previous_frame = state["last_recorded_frame"]
+
+    if next_frame_time is None or previous_frame is None:
+        return
+
+    interval = 1.0 / RECORDING_FPS
+
+    # El frame actual aún no existía en estos instantes. Repetir el último frame
+    # conocido conserva la duración real cuando la inferencia pierde fluidez.
+    while next_frame_time <= timestamp:
+        writer.write(previous_frame)
+        next_frame_time += interval
+
+    state["next_frame_time"] = next_frame_time
+
+
+def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_buffer_seconds, alert_triggered, amenaza_presente, shared_state=None, pre_buffer_seconds=None, frame_timestamp=None):
+    """
+    Máquina de estados para persistencia de video con una línea de tiempo CFR.
+
+    La duración de salida se deriva de tiempo monotónico: si la IA procesa más
+    lento se repite el último frame y, si procesa más rápido, se omiten los
+    frames que caen entre dos instantes de salida. De este modo la reproducción
+    conserva velocidad 1:1 aunque la tasa de entrada varíe.
     """
     cam_upper = cam_name.upper()
     state = recording_state[cam_upper]
     w, h = camera_resolutions[cam_upper]
 
-    ahora = time.time()
-    intervalo_objetivo = 1.0 / RECORDING_FPS  # Ej: 1 / 15 = 0.0666 segundos
+    ahora = time.monotonic() if frame_timestamp is None else float(frame_timestamp)
+
+    if pre_buffer_seconds is not None:
+        state["pre_buffer_seconds"] = max(0.0, float(pre_buffer_seconds))
 
     # Escalado a la resolución destino solo si es necesario
     if frame.shape[1] != w or frame.shape[0] != h:
@@ -133,69 +343,57 @@ def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_
     else:
         frame_resized = frame
 
-    # =========================================================================
-    # 🎯 CONTROL DE TEMPORIZACIÓN CON COMPENSACIÓN DE CAÍDAS DE FPS
-    # =========================================================================
-    time_elapsed = ahora - state["last_frame_time"]
+    # ESTADO 1: MONITOREO PASIVO (pre-búfer basado en segundos reales)
+    if not state["recording"]:
+        _agregar_al_prebuffer(
+            state, ahora, frame_resized, force=bool(alert_triggered)
+        )
 
-    if time_elapsed >= intervalo_objetivo:
-        # Calcular cuántos fotogramas de 15 FPS representan el tiempo real transcurrido
-        cuadros_a_insertar = int(time_elapsed / intervalo_objetivo)
-        # Limitar la repetición máxima a 3 cuadros para evitar acumulación si hay un congelamiento brusco
-        cuadros_a_insertar = min(cuadros_a_insertar, 3)
+        if alert_triggered:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = os.path.join(EVIDENCE_DIR, f"{cam_upper}_{timestamp}.mp4")
 
-        # ESTADO 1: MONITOREO PASIVO (Rellenar Pre-búfer)
-        if not state["recording"]:
-            for _ in range(cuadros_a_insertar):
-                state["frame_buffer"].append(frame_resized)
-            state["last_frame_time"] = ahora
+            fourcc = cv2.VideoWriter_fourcc(*"avc1")
+            writer = cv2.VideoWriter(filename, fourcc, RECORDING_FPS, (w, h))
 
-            if alert_triggered:
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                filename = os.path.join(EVIDENCE_DIR, f"{cam_upper}_{timestamp}.mp4")
-
-                fourcc = cv2.VideoWriter_fourcc(*"avc1")
-                writer = cv2.VideoWriter(filename, fourcc, RECORDING_FPS, (w, h))
-
-                if not writer.isOpened():
-                    if shared_state:
-                        shared_state.emitir_evento_dashboard('system_log', {
-                            "type": "error", 
-                            "message": f"ALMACENAMIENTO_ERROR: NO SE PUDO CREAR ARCHIVO DE VIDEO EN: {cam_upper}"
-                        })
-                    return
-
+            if not writer.isOpened():
                 if shared_state:
                     shared_state.emitir_evento_dashboard('system_log', {
-                        "type": "warn", 
-                        "message": f"ALMACENAMIENTO: ALERTA DETECTADA -> INICIANDO GRABACIÓN EN CANAL: {cam_upper}"
+                        "type": "error",
+                        "message": f"ALMACENAMIENTO_ERROR: NO SE PUDO CREAR ARCHIVO DE VIDEO EN: {cam_upper}"
                     })
+                return
 
-                state["recording"] = True
-                state["writer"] = writer
-                state["post_buffer_start_time"] = None
-                state["current_file"] = filename
-                state["last_frame_time"] = ahora
+            if shared_state:
+                shared_state.emitir_evento_dashboard('system_log', {
+                    "type": "warn",
+                    "message": f"ALMACENAMIENTO: ALERTA DETECTADA -> INICIANDO GRABACIÓN EN CANAL: {cam_upper}"
+                })
 
-                # Volcado asíncrono del pre-búfer acumulado
-                buffer_copy = list(state["frame_buffer"])
-                state["frame_buffer"].clear()
+            buffer_copy = list(state["frame_buffer"])
+            state["frame_buffer"].clear()
 
-                hilo_flush = threading.Thread(
-                    target=_volcar_buffer_asincrono,
-                    args=(writer, buffer_copy, state["lock"]),
-                    daemon=True,
-                    name=f"BufferFlush-{cam_upper}"
-                )
-                hilo_flush.start()
-
-        # ESTADO 2: GRABACIÓN ACTIVA (Escribir en el archivo MP4)
-        else:
+            # Operación deliberadamente síncrona: garantiza que ningún frame
+            # posterior a la alerta se inserte entre frames del pre-búfer.
             with state["lock"]:
-                if state["writer"] is not None and state["writer"].isOpened():
-                    for _ in range(cuadros_a_insertar):
-                        state["writer"].write(frame_resized)
-            state["last_frame_time"] = ahora
+                next_frame_time, last_frame = _volcar_buffer_ordenado(
+                    writer, buffer_copy, RECORDING_FPS
+                )
+
+            state["recording"] = True
+            state["writer"] = writer
+            state["post_buffer_start_time"] = None
+            state["current_file"] = filename
+            state["next_frame_time"] = next_frame_time
+            state["last_recorded_frame"] = last_frame
+
+    # ESTADO 2: GRABACIÓN ACTIVA
+    else:
+        with state["lock"]:
+            writer = state["writer"]
+            if writer is not None and writer.isOpened():
+                _escribir_hasta_timestamp(writer, state, ahora)
+                state["last_recorded_frame"] = frame_resized.copy()
 
     # LÓGICA DE CONTROL DEL POST-BUFFER
     if state["recording"]:
@@ -215,6 +413,9 @@ def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_
 
                     state["recording"] = False
                     state["post_buffer_start_time"] = None
+                    state["next_frame_time"] = None
+                    state["last_recorded_frame"] = None
+                    state["next_prebuffer_time"] = None
 
                     archivo_guardado = state["current_file"]
 
@@ -226,13 +427,9 @@ def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_
                         f"ESTADO: ARCHIVADO EN EL SISTEMA"
                     )
 
-                    hilo_upload = threading.Thread(
-                        target=_procesar_y_subir_evidencia, 
-                        args=(archivo_guardado, telemetria_caption, shared_state),
-                        daemon=True,
-                        name=f"Uploader-{cam_upper}"
+                    _encolar_evidencia(
+                        archivo_guardado, telemetria_caption, shared_state
                     )
-                    hilo_upload.start()
 
                     if shared_state:
                         shared_state.emitir_evento_dashboard('system_log', {

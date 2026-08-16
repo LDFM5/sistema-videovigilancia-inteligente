@@ -24,9 +24,28 @@ def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_
         return [], []
 
     # Extracción de índices enteros de las clases bajo protocolo de alerta (ej. firearm, melee_weapon)
-    ids_armas = []
-    if clases_alerta and hasattr(model, 'names'):
-        ids_armas = [id_clase for id_clase, nombre in model.names.items() if nombre in clases_alerta]
+    cache_key = tuple(sorted(clases_alerta or ()))
+    cache = getattr(model, "_daocs_class_filter_cache", {})
+    ids_armas = cache.get(cache_key)
+
+    if ids_armas is None:
+        ids_armas = []
+        if clases_alerta and hasattr(model, 'names'):
+            names_items = (
+                model.names.items()
+                if hasattr(model.names, "items")
+                else enumerate(model.names)
+            )
+            ids_armas = [
+                id_clase
+                for id_clase, nombre in names_items
+                if nombre in clases_alerta
+            ]
+        cache[cache_key] = ids_armas
+        try:
+            model._daocs_class_filter_cache = cache
+        except Exception:
+            pass
 
     # Convertir a conjunto hash para búsqueda ultrarrápida O(1)
     set_ids_armas = set(ids_armas)
@@ -35,7 +54,7 @@ def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_
     filtro_clases = None if modo_debug else (ids_armas if ids_armas else None)
 
     # Inferencia en lote con contexto de gradiente desactivado para optimizar VRAM
-    with torch.no_grad():
+    with torch.inference_mode():
         results = model(frames_list, conf=conf, classes=filtro_clases, verbose=False)
     
     alertas_por_frame = []
