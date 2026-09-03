@@ -1,11 +1,11 @@
 """
 detection.py
 
-Módulo optimizado para inferencia en tiempo real y arquitectura Edge AI por lotes.
+Inferencia por lotes para el modelo de detección de objetos peligrosos.
 Responsabilidades:
-- Ejecutar inferencia matricial síncrona por lotes (Batching) en hardware acelerador.
-- Filtrar descriptores y taxonomías de objetos de interés (Armas/Riesgos).
-- Extraer regiones de interés y etiquetas confirmatorias por canal.
+- Ejecutar la inferencia de varios fotogramas en una sola operación.
+- Filtrar las clases de objetos configuradas.
+- Extraer regiones de interés y etiquetas por cámara.
 """
 
 import torch
@@ -19,7 +19,7 @@ def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_
     Procesa de forma simultánea múltiples flujos matriciales de video para la detección de armamento.
     Mitiga el overhead de transferencia hacia la memoria de la GPU.
     """
-    # 🚨 SOLUCIÓN BUG 2: Garantizar retorno de tupla homogénea ante listas vacías
+    # Mantener un tipo de retorno uniforme cuando no hay fotogramas.
     if not frames_list:
         return [], []
 
@@ -47,15 +47,28 @@ def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_
         except Exception:
             pass
 
-    # Convertir a conjunto hash para búsqueda ultrarrápida O(1)
+
+    # Convertir a conjunto para realizar búsquedas O(1).
     set_ids_armas = set(ids_armas)
 
-    # Gestión de modo depuración o aplicación del filtro restrictivo estricto de clases en el modelo
+    # Aplicar el filtro de clases cuando el modo de depuración está desactivado.
     filtro_clases = None if modo_debug else (ids_armas if ids_armas else None)
+
+    # Detección automática de precisión: Si el modelo corre en GPU (CUDA), se activa half (FP16)
+    use_half = False
+    try:
+        if hasattr(model, 'device') and model.device.type == 'cuda':
+            use_half = True
+        elif hasattr(model, 'model') and next(model.model.parameters()).device.type == 'cuda':
+            use_half = True
+        elif torch.cuda.is_available():
+            use_half = True
+    except Exception:
+        use_half = False
 
     # Inferencia en lote con contexto de gradiente desactivado para optimizar VRAM
     with torch.inference_mode():
-        results = model(frames_list, conf=conf, classes=filtro_clases, verbose=False)
+        results = model(frames_list, conf=conf, classes=filtro_clases, half=use_half, verbose=False)
     
     alertas_por_frame = []
 
@@ -63,18 +76,23 @@ def batch_detect_weapons(model, frames_list, conf=0.5, clases_alerta=None, modo_
     for r in results:
         tiene_arma_real = False
         if r.boxes is not None and len(r.boxes) > 0:
-            for cls_id in r.boxes.cls:
-                # Si hay filtro de clases activo, validar contra el conjunto de interés
-                if set_ids_armas:
-                    if int(cls_id) in set_ids_armas:
-                        tiene_arma_real = True
-                        break  # Interrupción por hallazgo confirmatorio mínimo
-                else:
-                    # Si no se definieron clases_alerta, cualquier detección sobre el umbral es válida
-                    tiene_arma_real = True
-                    break
+            if set_ids_armas:
+                # Una sola reducción en GPU y una sola sincronización escalar,
+                # en vez de int(cls_id) por cada caja detectada.
+                class_ids = r.boxes.cls
+                target_ids = torch.as_tensor(
+                    tuple(set_ids_armas),
+                    device=class_ids.device,
+                    dtype=class_ids.dtype,
+                )
+                tiene_arma_real = bool(
+                    (class_ids[:, None] == target_ids[None, :]).any().item()
+                )
+            else:
+                # Si no se definieron clases_alerta, cualquier detección sobre el umbral es válida
+                tiene_arma_real = True
 
         alertas_por_frame.append(tiene_arma_real)
 
-    # 🚨 SOLUCIÓN BUG 1: Retorno unificado fuera del bucle FOR
+    # Devolver los resultados del lote una vez procesados todos los fotogramas.
     return results, alertas_por_frame

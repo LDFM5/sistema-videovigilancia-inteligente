@@ -36,7 +36,7 @@ def initialize_windows(camera_fps, window_seconds):
             "nominal_fps": nominal_fps,
         }
         print(
-            f"⏱️ Ventana {cam_upper}: {window_seconds:.2f} segundos "
+            f"[INFO] Ventana {cam_upper}: {window_seconds:.2f} segundos "
             f"(referencia {nominal_fps:.1f} FPS)."
         )
 

@@ -1,9 +1,8 @@
 """
 visualization.py
 
-Módulo responsable de la interfaz gráfica superpuesta (Overlay) en el video.
-Calcula el rendimiento de hardware (RAM/CPU/FPS) de forma optimizada con caché
-y dibujado por región de interés (ROI) sin sobrecargar la CPU.
+Muestra métricas de hardware (RAM, CPU y FPS) sobre el video.
+Utiliza una caché y limita el dibujo al área ocupada por el texto.
 """
 
 import cv2
@@ -19,13 +18,13 @@ _TEXTO_RENDIMIENTO_CACHE = ""
 def draw_performance_overlay(frame, fps_real):
     """
     Recibe un fotograma crudo, calcula el consumo de hardware (actualizado cada 0.5s)
-    y dibuja la telemetría utilizando un recorte ROI de alto rendimiento.
+    y muestra las métricas en el área correspondiente del fotograma.
     """
     global _ULTIMA_ACTUALIZACION_METRICAS, _TEXTO_RENDIMIENTO_CACHE
 
     ahora = time.time()
 
-    # 🎯 CACHÉ DE HARDWARE: Actualizar estadísticas de CPU y RAM solo cada 0.5 segundos
+    # Actualizar las estadísticas de CPU y memoria cada 0.5 segundos.
     if ahora - _ULTIMA_ACTUALIZACION_METRICAS >= 0.5 or not _TEXTO_RENDIMIENTO_CACHE:
         try:
             proceso = psutil.Process(os.getpid())
@@ -68,12 +67,12 @@ def draw_performance_overlay(frame, fps_real):
     rect_x1, rect_y1 = max(0, x - 5), max(0, y - alto_texto - 5)
     rect_x2, rect_y2 = min(w_frame, x + ancho_texto + 5), min(h_frame, y + baseline + 5)
 
-    # 🚀 OPTIMIZACIÓN ROI: Aplicar transparencia del 50% ÚNICAMENTE a la franja del texto
+    # Aplicar transparencia únicamente al área ocupada por el texto.
     if rect_x2 > rect_x1 and rect_y2 > rect_y1:
         roi = frame[rect_y1:rect_y2, rect_x1:rect_x2]
         frame[rect_y1:rect_y2, rect_x1:rect_x2] = cv2.convertScaleAbs(roi, alpha=0.50)
 
-    # Estampar la cadena de telemetría
+    # Dibujar el texto de las métricas.
     cv2.putText(
         frame, 
         _TEXTO_RENDIMIENTO_CACHE, 

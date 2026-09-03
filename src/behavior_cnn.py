@@ -1,8 +1,8 @@
 """
 behavior_cnn.py
 
-Pipeline de inferencia perimetral para el modelo de comportamiento ResNet-18 + TSM (DAOCS).
-Optimizado con preprocesamiento matricial vectorizado en GPU y carga limpia de pesos.
+Inferencia del modelo de comportamiento ResNet-18 + TSM de DAOCS.
+Utiliza preprocesamiento matricial en GPU y normaliza las claves del archivo de pesos.
 """
 
 import os
@@ -92,7 +92,7 @@ def cargar_modelo_violencia(ruta_modelo, dispositivo):
     Instancia ViolenceNetTSM y realiza una limpieza de llaves para evitar discrepancias de prefijos.
     """
     if not os.path.exists(ruta_modelo):
-        print(f"\n[ERROR DE RUTA] NO SE ENCONTRÓ EL ARCHIVO EN -> {ruta_modelo}\n")
+        print(f"\n[ERROR] No se encontró el modelo en {ruta_modelo}.\n")
         return None
 
     try:
@@ -119,33 +119,32 @@ def cargar_modelo_violencia(ruta_modelo, dispositivo):
         modelo.model.load_state_dict(cleaned_state_dict)
         modelo.to(dispositivo)
         modelo.eval()
-        print(f"\n[SISTEMA IA] Modelo ResNet-18 + TSM cargado exitosamente desde: {os.path.basename(ruta_modelo)}\n")
+        print(f"\n[INFO] Modelo ResNet-18 + TSM cargado desde {os.path.basename(ruta_modelo)}.\n")
         return modelo
     except Exception as e:
-        print(f"\n[ERROR EN PYTORCH] FALLO AL CARGAR PESOS .PTH -> {e}\n")
+        print(f"\n[ERROR] No se pudo cargar el modelo de comportamiento: {e}\n")
         return None
 
 
-def evaluar_secuencia_violencia(modelo, dispositivo, buffer_fotogramas, umbral_confianza=0.50):
+def preprocesar_buffer_a_tensor(buffer_fotogramas):
     """
-    Extrae 16 fotogramas y ejecuta la inferencia con normalización ImageNet en GPU.
+    Extrae 16 fotogramas uniformes en el tiempo y devuelve un array numpy (16, 3, 224, 224)
+    en formato RGB listo para empaquetar por lotes (Batch) en GPU.
     """
-    if modelo is None or len(buffer_fotogramas) < 2:
-        return "NORMAL", 0.0
-
     buffer_list = list(buffer_fotogramas)
+    if len(buffer_list) < 2:
+        return None
+
     timed_buffer = (
         isinstance(buffer_list[0], tuple)
         and len(buffer_list[0]) == 2
         and isinstance(buffer_list[0][0], (int, float))
     )
 
-    # 1. Muestreo de 16 instantes uniformes. Con timestamps, una cámara lenta
-    # puede repetir frames sin alterar el periodo temporal representado.
     if timed_buffer:
         timestamps = np.asarray([item[0] for item in buffer_list], dtype=np.float64)
-        if timestamps[-1] - timestamps[0] < 0.5:
-            return "NORMAL", 0.0
+        if timestamps[-1] - timestamps[0] < 0.4:
+            return None
 
         target_times = np.linspace(timestamps[0], timestamps[-1], num=16)
         indices = np.searchsorted(timestamps, target_times, side="right") - 1
@@ -153,37 +152,86 @@ def evaluar_secuencia_violencia(modelo, dispositivo, buffer_fotogramas, umbral_c
         source_frames = [item[1] for item in buffer_list]
     else:
         if len(buffer_list) < 16:
-            return "NORMAL", 0.0
+            return None
         indices = np.linspace(0, len(buffer_list) - 1, num=16, dtype=int)
         source_frames = buffer_list
 
-    # 2. Resizing y apilado
-    cuadros_muestreados = []
+    cuadros = []
     for idx in indices:
         f = source_frames[int(idx)]
-        if f.shape[0] != 224 or f.shape[1] != 224:
-            f = cv2.resize(f, (224, 224), interpolation=cv2.INTER_LINEAR)
-        cuadros_muestreados.append(f)
+        h, w = f.shape[:2]
+        if h != 224 or w != 224:
+            f_resized = cv2.resize(f, (224, 224), interpolation=cv2.INTER_LINEAR)
+        else:
+            f_resized = f
+        cuadros.append(f_resized)
 
-    batch_numpy = np.stack(cuadros_muestreados)
-    batch_rgb = batch_numpy[..., ::-1].copy()
-    batch_chw = np.transpose(batch_rgb, (0, 3, 1, 2))
+    # Convertir BGR a RGB y transponer a (16, 3, 224, 224)
+    tensor_np = np.transpose(np.stack(cuadros)[..., ::-1].copy(), (0, 3, 1, 2))
+    return tensor_np
 
-    tensor_uint8 = torch.from_numpy(batch_chw).unsqueeze(0).to(dispositivo)
 
-    # 3. Normalización ImageNet en GPU
+def evaluar_secuencias_violencia_batch(modelo, dispositivo, lista_items):
+    """
+    Procesa de forma simultánea múltiples secuencias de cámaras en un solo lote (Batch) en GPU.
+    lista_items: Lista de tuplas (cam_key, buffer_fotogramas, umbral_confianza)
+    Retorna: Lista de tuplas (cam_key, clase, probabilidad_violencia)
+    """
+    if modelo is None or not lista_items:
+        return []
+
+    valid_cams = []
+    valid_tensors = []
+    umbrales = []
+
+    for cam_key, buffer_fotogramas, umbral in lista_items:
+        tensor_cam = preprocesar_buffer_a_tensor(buffer_fotogramas)
+        if tensor_cam is not None:
+            valid_cams.append(cam_key)
+            valid_tensors.append(tensor_cam)  # (16, 3, 224, 224)
+            umbrales.append(umbral)
+        else:
+            valid_cams.append(cam_key)
+            valid_tensors.append(None)
+            umbrales.append(umbral)
+
+    indices_validos = [i for i, t in enumerate(valid_tensors) if t is not None]
+    resultados = [(valid_cams[i], "NORMAL", 0.0) for i in range(len(valid_cams))]
+
+    if not indices_validos:
+        return resultados
+
+    # Apilar todas las secuencias válidas en un único tensor de lote: (N_validos, 16, 3, 224, 224)
+    batch_tensors = np.stack([valid_tensors[i] for i in indices_validos], axis=0)
+
+    tensor_uint8 = torch.from_numpy(batch_tensors).to(dispositivo)
     tensor_float = tensor_uint8.float() / 255.0
     tensor_entrada = (tensor_float - modelo.input_mean) / modelo.input_std
 
-    # 4. Inferencia
     with torch.inference_mode():
         with torch.amp.autocast('cuda', enabled=(dispositivo.type == 'cuda')):
-            salida_logits = modelo(tensor_entrada)
-            probabilidades = torch.softmax(salida_logits, dim=1).squeeze(0)
+            salida_logits = modelo(tensor_entrada)  # (N, 2)
+            probabilidades = torch.softmax(salida_logits, dim=1)
 
-        probabilidad_violencia = probabilidades[1].item()
+        probs_violencia = probabilidades[:, 1].tolist()
 
-    if probabilidad_violencia >= umbral_confianza:
-        return "VIOLENCE", probabilidad_violencia
+    for idx_batch, orig_idx in enumerate(indices_validos):
+        p_violencia = probs_violencia[idx_batch]
+        umbral = umbrales[orig_idx]
+        clase = "VIOLENCE" if p_violencia >= umbral else "NORMAL"
+        resultados[orig_idx] = (valid_cams[orig_idx], clase, p_violencia)
 
-    return "NORMAL", probabilidad_violencia
+    return resultados
+
+
+def evaluar_secuencia_violencia(modelo, dispositivo, buffer_fotogramas, umbral_confianza=0.50):
+    """
+    Wrapper de compatibilidad para evaluación individual de una sola cámara o clip.
+    """
+    res = evaluar_secuencias_violencia_batch(
+        modelo, dispositivo, [("CAM", buffer_fotogramas, umbral_confianza)]
+    )
+    if res:
+        _, clase, score = res[0]
+        return clase, score
+    return "NORMAL", 0.0

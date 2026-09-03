@@ -20,7 +20,43 @@ RUTA_JSON_CONFIG = os.path.join(BASE_DIR, "config_usuario.json")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 EVIDENCE_DIR = os.path.join(BASE_DIR, "evidences")
 
-# Garantizar la existencia de carpetas operativas esenciales
+# Crear las carpetas de trabajo si no existen.
+os.makedirs(EVIDENCE_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Rutas de los modelos neuronales entrenados
+WEAPON_MODEL_PATH = os.path.join(MODELS_DIR, "Modelo_objetos_sospechosos.pt")
+POSE_MODEL_PATH = os.path.join(MODELS_DIR, "yolo11n-pose.pt")
+BEHAVIOR_MODEL_PATH = os.path.join(MODELS_DIR, "comportamiento.pth")
+
+# =========================
+# VENTANAS TEMPORALES Y PARÁMETROS FIJOS
+# =========================
+WINDOW_SECONDS = 1.5           
+ACTIVATION_THRESHOLD = 15     
+RECORDING_FPS = 15
+
+# =========================
+# CÁMARAS Y CANALES
+# =========================
+CAMERA_INDEXES = {
+    "webcam": 0,
+    #"phone": 1
+}
+
+# =========================
+# CLASES DE DETECCIÓN DE ARMAS
+# =========================
+CLASES_ARMAS_ALERTA = ["firearm", "melee_weapon"]
+
+# =========================
+# CREDENCIALES DE TELEGRAM
+# =========================
+try:
+    from config_local import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+except ImportError:
+    TELEGRAM_TOKEN = None
+    TELEGRAM_CHAT_ID = None
 os.makedirs(EVIDENCE_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
@@ -71,7 +107,10 @@ VALORES_FABRICA = {
     "cfg_confianza_comportamiento": 0.50,
     "cfg_prebuffer": 10,
     "cfg_postbuffer": 15,
-    "cfg_debug": False 
+    "cfg_debug": False,
+    "camaras": {
+        "webcam": 0
+    }
 }
 
 def cargar_configuracion_inicial():
@@ -85,7 +124,11 @@ def cargar_configuracion_inicial():
         
     try:
         with open(RUTA_JSON_CONFIG, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            # Asegurar que la clave 'camaras' exista
+            if "camaras" not in data:
+                data["camaras"] = dict(VALORES_FABRICA["camaras"])
+            return data
     except Exception:
         # Si el JSON estaba corrupto, se sobreescribe con seguridad para reparar el sistema
         guardar_configuracion_disco(VALORES_FABRICA)
@@ -105,6 +148,13 @@ CONF_BEHAVIOR = float(_config_disco.get("cfg_confianza_comportamiento", 0.50))
 PRE_BUFFER_SECONDS = int(_config_disco.get("cfg_prebuffer", 10))
 POST_BUFFER_SECONDS = int(_config_disco.get("cfg_postbuffer", 15))
 MODO_DEBUG = bool(_config_disco.get("cfg_debug", False))
+CAMERA_INDEXES = dict(_config_disco.get("camaras", {"webcam": 0}))
+
+
+def obtener_camaras_configuradas():
+    """Retorna el diccionario actual de cámaras desde la configuración persistida."""
+    cfg = cargar_configuracion_inicial()
+    return cfg.get("camaras", CAMERA_INDEXES)
 
 
 def guardar_configuracion_disco(nuevos_valores):
@@ -114,11 +164,11 @@ def guardar_configuracion_disco(nuevos_valores):
     """
     temp_path = RUTA_JSON_CONFIG + ".tmp"
     
-    # 1. Escritura segura en archivo temporal
+    # 1. Escribir los datos en un archivo temporal.
     with open(temp_path, 'w', encoding='utf-8') as f:
         json.dump(nuevos_valores, f, indent=2)
         
-    # 2. Reemplazo atómico garantizado por el sistema operativo
+    # 2. Reemplazar el archivo de configuración de forma atómica.
     os.replace(temp_path, RUTA_JSON_CONFIG)
     
     # 3. Sincronización de variables en la memoria RAM de este módulo
@@ -132,6 +182,8 @@ def guardar_configuracion_disco(nuevos_valores):
     setattr(modulo, "PRE_BUFFER_SECONDS", int(nuevos_valores.get("cfg_prebuffer", 10)))
     setattr(modulo, "POST_BUFFER_SECONDS", int(nuevos_valores.get("cfg_postbuffer", 15)))
     setattr(modulo, "MODO_DEBUG", bool(nuevos_valores.get("cfg_debug", False)))
+    if "camaras" in nuevos_valores:
+        setattr(modulo, "CAMERA_INDEXES", dict(nuevos_valores["camaras"]))
 
 
 def restaurar_valores_fabrica():

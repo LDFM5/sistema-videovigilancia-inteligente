@@ -1,8 +1,8 @@
 """
 recorder.py
 
-Módulo de captura y persistencia de evidencia digital con temporización
-estricta por delta de tiempo para garantizar velocidad de reproducción 1:1 real.
+Captura y almacenamiento de evidencia digital con temporización basada en
+diferencias de tiempo para mantener la velocidad de reproducción configurada.
 """
 
 import os
@@ -143,34 +143,38 @@ def _comprimir_video(input_path, output_path, shared_state):
 def _procesar_y_subir_evidencia(filepath, caption, shared_state):
     base, ext = os.path.splitext(filepath)
     temp_path = f"{base}_lite{ext}"
+    video_enviado_a_cola = False
 
     try:
         if shared_state:
             shared_state.emitir_evento_dashboard('system_log', {
                 "type": "info", 
-                "message": "COMPRESOR_VIDEO: PREPARANDO ARCHIVO PARA TRANSMISIÓN..."
+                "message": "Preparando el video de evidencia para su envío."
             })
 
         _comprimir_video(filepath, temp_path, shared_state)
 
-        if os.path.exists(temp_path):
+        if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
             size_mb = os.path.getsize(temp_path) / (1024 * 1024)
             if shared_state:
                 shared_state.emitir_evento_dashboard('system_log', {
                     "type": "success", 
-                    "message": f"COMPRESOR_VIDEO: COMPRESIÓN EXITOSA ({size_mb:.2f} MB). ENVIANDO..."
+                    "message": f"Video de evidencia preparado ({size_mb:.2f} MB)."
                 })
 
-            send_video_sync(temp_path, caption, shared_state=shared_state)
+            send_video_sync(temp_path, caption, remove_after_send=True, shared_state=shared_state)
+            video_enviado_a_cola = True
+        else:
+            send_video_sync(filepath, caption, remove_after_send=False, shared_state=shared_state)
 
     except Exception as e:
         if shared_state:
             shared_state.emitir_evento_dashboard('system_log', {
                 "type": "error", 
-                "message": f"ALMACENAMIENTO_ERROR: FALLO EN PROCESAMIENTO MULTIMEDIA -> REF: {str(e).upper()}"
+                "message": f"No se pudo procesar el video de evidencia: {e}"
             })
     finally:
-        if os.path.exists(temp_path):
+        if not video_enviado_a_cola and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
             except Exception:
@@ -211,34 +215,45 @@ def _encolar_evidencia(filepath, caption, shared_state):
         if shared_state:
             shared_state.emitir_evento_dashboard('system_log', {
                 "type": "error",
-                "message": "COLA_EVIDENCIA: CAPACIDAD AGOTADA; EL VIDEO QUEDÓ GUARDADO LOCALMENTE.",
+                "message": "La cola de envío está llena. El video se conservó en el almacenamiento local.",
             })
         return False
+
+
+def inicializar_camara_grabacion(cam_upper, pre_buffer_seconds):
+    """Inicializa la estructura de grabación y el worker asíncrono para una sola cámara."""
+    camera_state = {
+        "recording": False,
+        "writer": None,
+        "frame_buffer": deque(),
+        "pre_buffer_seconds": max(0.0, float(pre_buffer_seconds)),
+        "next_prebuffer_time": None,
+        "post_buffer_start_time": None,
+        "next_frame_time": None,
+        "last_recorded_frame": None,
+        "current_file": None,
+        "session_id": 0,
+        "command_queue": queue.Queue(),
+        "queue_warning_sent": False,
+        "lock": threading.Lock(),
+    }
+    threading.Thread(
+        target=_recording_writer_loop,
+        args=(cam_upper, camera_state),
+        daemon=True,
+        name=f"RecordingWriter-{cam_upper}",
+    ).start()
+    return camera_state
 
 
 def initialize_recording_state(cameras, pre_buffer_seconds):
     """
     Inicializa los buffers y los registros de marcas de tiempo por cámara.
-
-    El pre-búfer se limita por tiempo real y no por una cantidad estimada de
-    fotogramas. Esto evita que su duración cambie cuando el ciclo de inferencia
-    trabaja a una tasa distinta de RECORDING_FPS.
     """
     state = {}
     for cam_name in cameras:
         cam_upper = cam_name.upper()
-        state[cam_upper] = {
-            "recording": False,
-            "writer": None,
-            "frame_buffer": deque(),
-            "pre_buffer_seconds": max(0.0, float(pre_buffer_seconds)),
-            "next_prebuffer_time": None,
-            "post_buffer_start_time": None,
-            "next_frame_time": None,
-            "last_recorded_frame": None,
-            "current_file": None,
-            "lock": threading.Lock()
-        }
+        state[cam_upper] = inicializar_camara_grabacion(cam_upper, pre_buffer_seconds)
     return state
 
 
@@ -269,7 +284,7 @@ def _agregar_al_prebuffer(state, timestamp, frame, force=False):
         state["frame_buffer"].popleft()
 
 
-def _volcar_buffer_ordenado(writer, timed_frames, fps):
+def _muestrear_buffer_ordenado(timed_frames, fps):
     """
     Convierte frames con timestamps variables a una secuencia CFR ordenada.
 
@@ -278,13 +293,14 @@ def _volcar_buffer_ordenado(writer, timed_frames, fps):
     intercalarse el pasado con el presente.
     """
     if not timed_frames:
-        return None, None
+        return [], None, None
 
     interval = 1.0 / fps
     next_frame_time = timed_frames[0][0]
     last_timestamp = timed_frames[-1][0]
     source_index = 0
     source_frame = timed_frames[0][1]
+    output_frames = []
 
     while next_frame_time <= last_timestamp:
         while (
@@ -294,29 +310,174 @@ def _volcar_buffer_ordenado(writer, timed_frames, fps):
             source_index += 1
             source_frame = timed_frames[source_index][1]
 
-        writer.write(source_frame)
+        output_frames.append(source_frame)
         next_frame_time += interval
 
-    return next_frame_time, timed_frames[-1][1]
+    return output_frames, next_frame_time, timed_frames[-1][1]
 
 
-def _escribir_hasta_timestamp(writer, state, timestamp):
-    """Rellena la línea de tiempo CFR hasta el instante del frame actual."""
+def _volcar_buffer_ordenado(writer, timed_frames, fps):
+    """Permite realizar pruebas y llamadas directas fuera del flujo principal."""
+    frames, next_frame_time, last_frame = _muestrear_buffer_ordenado(
+        timed_frames, fps
+    )
+    for frame in frames:
+        writer.write(frame)
+    return next_frame_time, last_frame
+
+
+def _obtener_frames_hasta_timestamp(state, timestamp):
+    """Genera referencias CFR sin realizar I/O en el hilo de video."""
     next_frame_time = state["next_frame_time"]
     previous_frame = state["last_recorded_frame"]
 
     if next_frame_time is None or previous_frame is None:
-        return
+        return []
 
     interval = 1.0 / RECORDING_FPS
-
-    # El frame actual aún no existía en estos instantes. Repetir el último frame
-    # conocido conserva la duración real cuando la inferencia pierde fluidez.
+    output_frames = []
     while next_frame_time <= timestamp:
-        writer.write(previous_frame)
+        output_frames.append(previous_frame)
         next_frame_time += interval
 
     state["next_frame_time"] = next_frame_time
+    return output_frames
+
+
+def _escribir_hasta_timestamp(writer, state, timestamp):
+    """Rellena la línea de tiempo CFR hasta el instante del frame actual."""
+    for frame in _obtener_frames_hasta_timestamp(state, timestamp):
+        writer.write(frame)
+
+
+def _crear_video_writer(filepath, width, height):
+    """Abre el archivo en el worker con fallback de codec compatible."""
+    for codec in ("avc1", "mp4v"):
+        writer = cv2.VideoWriter(
+            filepath,
+            cv2.VideoWriter_fourcc(*codec),
+            RECORDING_FPS,
+            (width, height),
+        )
+        if writer.isOpened():
+            return writer
+        writer.release()
+    return None
+
+
+def _marcar_fallo_writer(cam_upper, state, session_id, filepath, error, shared_state):
+    with state["lock"]:
+        if state["session_id"] == session_id:
+            state["recording"] = False
+
+    if shared_state:
+        shared_state.emitir_evento_dashboard('camera_status', {
+            "camera": cam_upper.lower(),
+            "status": "error",
+        })
+        shared_state.emitir_evento_dashboard('system_log', {
+            "type": "error",
+            "message": f"No se pudo guardar la grabación de {cam_upper}: {error}",
+        })
+
+    if filepath and os.path.exists(filepath):
+        try:
+            if os.path.getsize(filepath) == 0:
+                os.remove(filepath)
+        except OSError:
+            pass
+
+
+def _recording_writer_loop(cam_upper, state):
+    """Administra el VideoWriter y procesa los comandos en orden FIFO."""
+    writer = None
+    active_session = None
+    active_filepath = None
+    active_shared_state = None
+
+    while True:
+        command = state["command_queue"].get()
+        command_type = command[0]
+        try:
+            if command_type == "start":
+                (
+                    _, session_id, filepath, width, height,
+                    initial_frames, shared_state,
+                ) = command
+                if writer is not None:
+                    writer.release()
+
+                writer = _crear_video_writer(filepath, width, height)
+                if writer is None:
+                    raise RuntimeError("NO SE PUDO ABRIR VIDEOWRITER")
+
+                active_session = session_id
+                active_filepath = filepath
+                active_shared_state = shared_state
+                for buffered_frame in initial_frames:
+                    writer.write(buffered_frame)
+
+            elif command_type == "frames":
+                _, session_id, frames = command
+                if writer is not None and session_id == active_session:
+                    for output_frame in frames:
+                        writer.write(output_frame)
+
+            elif command_type == "stop":
+                _, session_id, filepath, caption, shared_state = command
+                if writer is not None and session_id == active_session:
+                    writer.release()
+                    writer = None
+                    active_session = None
+                    active_filepath = None
+                    active_shared_state = None
+                    _encolar_evidencia(filepath, caption, shared_state)
+                    if shared_state:
+                        shared_state.emitir_evento_dashboard('system_log', {
+                            "type": "success",
+                            "message": f"Grabación de evidencia completada para {cam_upper}.",
+                        })
+
+        except Exception as error:
+            session_id = command[1] if len(command) > 1 else active_session
+            shared_state = (
+                command[-1]
+                if command_type in ("start", "stop")
+                else active_shared_state
+            )
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+            writer = None
+            active_session = None
+            _marcar_fallo_writer(
+                cam_upper,
+                state,
+                session_id,
+                active_filepath,
+                error,
+                shared_state,
+            )
+            active_filepath = None
+            active_shared_state = None
+        finally:
+            state["command_queue"].task_done()
+
+
+def _encolar_comando_grabacion(cam_upper, state, command, shared_state=None):
+    state["command_queue"].put_nowait(command)
+    backlog = state["command_queue"].qsize()
+    if backlog > RECORDING_FPS * 10 and not state["queue_warning_sent"]:
+        state["queue_warning_sent"] = True
+        if shared_state:
+            shared_state.emitir_evento_dashboard('system_log', {
+                "type": "warn",
+                "message": f"El almacenamiento de {cam_upper} presenta retraso ({backlog} lotes pendientes).",
+            })
+    elif backlog < RECORDING_FPS * 2:
+        state["queue_warning_sent"] = False
 
 
 def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_buffer_seconds, alert_triggered, amenaza_presente, shared_state=None, pre_buffer_seconds=None, frame_timestamp=None):
@@ -353,47 +514,47 @@ def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             filename = os.path.join(EVIDENCE_DIR, f"{cam_upper}_{timestamp}.mp4")
 
-            fourcc = cv2.VideoWriter_fourcc(*"avc1")
-            writer = cv2.VideoWriter(filename, fourcc, RECORDING_FPS, (w, h))
-
-            if not writer.isOpened():
-                if shared_state:
-                    shared_state.emitir_evento_dashboard('system_log', {
-                        "type": "error",
-                        "message": f"ALMACENAMIENTO_ERROR: NO SE PUDO CREAR ARCHIVO DE VIDEO EN: {cam_upper}"
-                    })
-                return
-
             if shared_state:
                 shared_state.emitir_evento_dashboard('system_log', {
                     "type": "warn",
-                    "message": f"ALMACENAMIENTO: ALERTA DETECTADA -> INICIANDO GRABACIÓN EN CANAL: {cam_upper}"
+                    "message": f"Iniciando la grabación de evidencia para {cam_upper}."
                 })
 
             buffer_copy = list(state["frame_buffer"])
             state["frame_buffer"].clear()
 
-            # Operación deliberadamente síncrona: garantiza que ningún frame
-            # posterior a la alerta se inserte entre frames del pre-búfer.
-            with state["lock"]:
-                next_frame_time, last_frame = _volcar_buffer_ordenado(
-                    writer, buffer_copy, RECORDING_FPS
-                )
+            initial_frames, next_frame_time, last_frame = (
+                _muestrear_buffer_ordenado(buffer_copy, RECORDING_FPS)
+            )
 
             state["recording"] = True
-            state["writer"] = writer
             state["post_buffer_start_time"] = None
             state["current_file"] = filename
             state["next_frame_time"] = next_frame_time
             state["last_recorded_frame"] = last_frame
+            state["session_id"] += 1
+            session_id = state["session_id"]
+            _encolar_comando_grabacion(
+                cam_upper,
+                state,
+                (
+                    "start", session_id, filename, w, h,
+                    initial_frames, shared_state,
+                ),
+                shared_state,
+            )
 
     # ESTADO 2: GRABACIÓN ACTIVA
     else:
-        with state["lock"]:
-            writer = state["writer"]
-            if writer is not None and writer.isOpened():
-                _escribir_hasta_timestamp(writer, state, ahora)
-                state["last_recorded_frame"] = frame_resized.copy()
+        output_frames = _obtener_frames_hasta_timestamp(state, ahora)
+        state["last_recorded_frame"] = frame_resized.copy()
+        if output_frames:
+            _encolar_comando_grabacion(
+                cam_upper,
+                state,
+                ("frames", state["session_id"], output_frames),
+                shared_state,
+            )
 
     # LÓGICA DE CONTROL DEL POST-BUFFER
     if state["recording"]:
@@ -406,11 +567,6 @@ def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_
                 elapsed = ahora - state["post_buffer_start_time"]
 
                 if elapsed >= post_buffer_seconds:
-                    with state["lock"]:
-                        if state["writer"] is not None:
-                            state["writer"].release()
-                            state["writer"] = None
-
                     state["recording"] = False
                     state["post_buffer_start_time"] = None
                     state["next_frame_time"] = None
@@ -420,19 +576,19 @@ def handle_recording(cam_name, frame, camera_resolutions, recording_state, post_
                     archivo_guardado = state["current_file"]
 
                     telemetria_caption = (
-                        f"📹 VIDEO DE EVIDENCIA\n"
+                        f"VIDEO DE EVIDENCIA\n"
                         f"──────────────────────\n"
                         f"CÁMARA: {cam_upper}\n"
                         f"EVENTO: ALERTA DE SEGURIDAD\n"
                         f"ESTADO: ARCHIVADO EN EL SISTEMA"
                     )
 
-                    _encolar_evidencia(
-                        archivo_guardado, telemetria_caption, shared_state
+                    _encolar_comando_grabacion(
+                        cam_upper,
+                        state,
+                        (
+                            "stop", state["session_id"], archivo_guardado,
+                            telemetria_caption, shared_state,
+                        ),
+                        shared_state,
                     )
-
-                    if shared_state:
-                        shared_state.emitir_evento_dashboard('system_log', {
-                            "type": "success", 
-                            "message": f"ALMACENAMIENTO: GRABACIÓN COMPLETADA -> {cam_upper}"
-                        })

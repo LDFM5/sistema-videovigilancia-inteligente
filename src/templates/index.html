@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>DAOCS | Control de Operaciones Edge AI</title>
+    <title>DAOCS | Panel de seguridad</title>
     <style>
         :root {
             --bg-main: #0a0b0d;        
@@ -222,19 +222,21 @@
             gap: 8px;
         }
 
-        /* Botones de Control */
+        /* Botones de control */
         .btn-cam-action {
             background: transparent;
             border: none;
             color: var(--text-muted);
             cursor: pointer;
-            font-size: 1.1rem; 
+            font-family: var(--font-mono);
+            font-size: 1rem;
             display: flex;
             align-items: center;
             justify-content: center;
             transition: color 0.15s ease;
             height: 36px;
-            padding: 0 4px;
+            width: 28px;
+            padding: 0;
         }
         .btn-cam-action:hover { color: var(--accent); }
 
@@ -244,7 +246,10 @@
             border: none;
             color: var(--text-muted);
             cursor: pointer;
-            font-size: 1.3rem;
+            font-family: var(--font-ui);
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.4px;
             align-items: center;
             justify-content: center;
             height: 36px;
@@ -303,37 +308,73 @@
            SIDEBAR CONFIGURACIÓN
         ========================================= */
         #btn-config {
-            background: var(--panel-bg); 
-            color: var(--text-main); 
+            background: #111315;
+            color: var(--text-muted);
             border: 1px solid var(--panel-border);
             border-radius: 4px; 
-            width: 36px; 
+            width: 36px;
             height: 36px; 
+            padding: 0;
             cursor: pointer;
             display: flex; 
             align-items: center; 
             justify-content: center; 
-            transition: border-color 0.15s ease, color 0.15s ease;
+            transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
         }
-        #btn-config:hover { border-color: var(--accent); color: var(--accent); }
+        #btn-config:hover,
+        #btn-config[aria-expanded="true"] {
+            background: rgba(79, 195, 247, 0.06);
+            border-color: rgba(79, 195, 247, 0.6);
+            color: var(--accent);
+        }
+        #btn-config svg { width: 17px; height: 17px; }
 
         #sidebar {
             position: fixed; 
             right: 0; 
             top: 50px; 
             bottom: 0; 
-            width: 340px;
-            background: var(--panel-bg); 
-            border-left: 1px solid var(--panel-border);
-            padding: 24px; 
+            width: 370px;
+            background: #0e1013;
+            border-left: 1px solid #29303a;
+            padding: 18px;
             z-index: 100; 
             transform: translateX(100%); 
             transition: transform 0.18s cubic-bezier(0.05, 0.7, 0.1, 1); 
             display: flex; 
             flex-direction: column; 
-            gap: 24px;
-            box-shadow: -5px 0 20px rgba(0, 0, 0, 0.6);
+            gap: 14px;
+            box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
             will-change: transform; 
+            overflow-y: auto;
+        }
+
+        #sidebar,
+        .log-feed {
+            scrollbar-width: thin;
+            scrollbar-color: #3a4653 #0e1013;
+        }
+
+        #sidebar::-webkit-scrollbar,
+        .log-feed::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        #sidebar::-webkit-scrollbar-track,
+        .log-feed::-webkit-scrollbar-track {
+            background: #0e1013;
+        }
+
+        #sidebar::-webkit-scrollbar-thumb,
+        .log-feed::-webkit-scrollbar-thumb {
+            background: #303943;
+            border: 2px solid #0e1013;
+        }
+
+        #sidebar::-webkit-scrollbar-thumb:hover,
+        .log-feed::-webkit-scrollbar-thumb:hover {
+            background: #4a5868;
         }
 
         #sidebar.open { 
@@ -346,7 +387,7 @@
             left: 0; 
             right: 0; 
             bottom: 0; 
-            background: rgba(0, 0, 0, 0.5); 
+            background: rgba(3, 5, 7, 0.66);
             z-index: 99; 
             opacity: 0; 
             pointer-events: none; 
@@ -360,27 +401,166 @@
             pointer-events: auto; 
         }
 
-        .config-section { display: flex; flex-direction: column; gap: 12px; }
+        .sidebar-header {
+            min-height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--panel-border);
+        }
+        .sidebar-title {
+            font-family: var(--font-mono);
+            color: var(--text-main);
+            font-size: 0.76rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        .sidebar-close {
+            width: 28px;
+            height: 28px;
+            display: grid;
+            place-items: center;
+            color: var(--text-muted);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .sidebar-close:hover { color: var(--accent); border-color: var(--panel-border); }
+        .sidebar-close svg { width: 14px; height: 14px; }
+
+        .config-section {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 14px;
+            background: #111418;
+            border: 1px solid #20262e;
+            border-radius: 4px;
+        }
         .config-section h3 {
-            font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;
-            color: var(--text-muted); border-bottom: 1px solid var(--panel-border); padding-bottom: 6px;
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.9px;
+            color: #90a0b3;
+            border-bottom: 1px solid var(--panel-border);
+            padding-bottom: 9px;
         }
 
-        .control-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; gap: 10px; }
-        .input-number-precise {
-            background: #1a1d22; border: 1px solid var(--panel-border); color: var(--accent); font-family: var(--font-mono); font-size: 0.85rem;
-            font-weight: bold; width: 60px; padding: 4px 6px; text-align: center; border-radius: 4px; outline: none;
+        .control-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 24px;
+            color: #cbd1d8;
+            font-size: 0.82rem;
+            gap: 12px;
         }
-        input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
-        input[type="range"] { width: 100%; accent-color: var(--accent); background: #222; height: 4px; border-radius: 2px; outline: none; margin-top: 4px; }
+        .control-row.debug-row {
+            margin-top: 2px;
+            padding-top: 10px;
+            border-top: 1px solid var(--panel-border);
+        }
+        .input-number-precise {
+            width: 62px;
+            padding: 5px 6px;
+            color: var(--accent);
+            background: #0c0f12;
+            border: 1px solid #28313b;
+            border-radius: 3px;
+            outline: none;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-align: center;
+        }
+        .input-number-precise:focus { border-color: rgba(79, 195, 247, 0.7); }
+
+        input[type="checkbox"] {
+            appearance: none;
+            width: 30px;
+            height: 16px;
+            flex: 0 0 auto;
+            position: relative;
+            border: 1px solid #3a444f;
+            background: #090b0e;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        input[type="checkbox"]::after {
+            content: '';
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 8px;
+            height: 8px;
+            background: #657180;
+            transition: transform 0.15s ease, background 0.15s ease;
+        }
+        input[type="checkbox"]:checked {
+            background: rgba(79, 195, 247, 0.08);
+            border-color: var(--accent);
+        }
+        input[type="checkbox"]:checked::after {
+            background: var(--accent);
+            transform: translateX(14px);
+        }
+
+        input[type="range"] {
+            appearance: none;
+            width: 100%;
+            height: 3px;
+            margin-top: 2px;
+            background: #303943;
+            border-radius: 0;
+            outline: none;
+            cursor: pointer;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 10px;
+            height: 10px;
+            background: var(--accent);
+            border: 2px solid #0e1013;
+            border-radius: 0;
+            box-shadow: 0 0 0 1px rgba(79, 195, 247, 0.65);
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 8px;
+            height: 8px;
+            background: var(--accent);
+            border: 1px solid #0e1013;
+            border-radius: 0;
+        }
 
         .btn-panel {
-            width: 100%; padding: 10px; background: transparent; border: 1px solid var(--panel-border);
-            color: var(--text-main); font-family: var(--font-ui); font-size: 0.8rem; font-weight: 600;
-            text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; border-radius: 4px; transition: 0.2s;
+            width: 100%;
+            min-height: 38px;
+            padding: 9px 12px;
+            background: #111418;
+            border: 1px solid #28303a;
+            color: #aeb7c2;
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
         }
-        .btn-panel.primary { background: var(--accent); color: #050505; border: none; }
-        .btn-panel.primary:hover { background: #3faad6; }
+        .btn-panel:hover { color: var(--text-main); border-color: #3a4653; }
+        .btn-panel.primary {
+            color: var(--accent);
+            background: rgba(79, 195, 247, 0.07);
+            border-color: rgba(79, 195, 247, 0.55);
+        }
+        .btn-panel.primary:hover { background: rgba(79, 195, 247, 0.12); border-color: var(--accent); }
+        .sidebar-actions { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
 
         /* =========================================
            PANEL INFERIOR (LOGS Y ALERTAS)
@@ -411,7 +591,22 @@
             animation: fadeIn 0.25s ease-out;
         }
         .alert-item .time { color: var(--text-muted); font-size: 0.75rem; }
-        .btn-toggle-sub { background: transparent; border: none; color: var(--text-muted); font-family: var(--font-mono); font-size: 0.75rem; cursor: pointer; padding: 2px 6px; }
+        .btn-toggle-sub {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            cursor: pointer;
+            padding: 2px 4px;
+            letter-spacing: 0.4px;
+        }
+        .btn-toggle-sub:hover { color: var(--accent); }
+        .btn-toggle-sub svg { width: 12px; height: 12px; transition: transform 0.18s ease; }
+        .btn-toggle-sub.is-collapsed svg { transform: rotate(180deg); }
 
         @keyframes pulse {
             0% { transform: scale(1); opacity: 0.6; }
@@ -427,15 +622,27 @@
 
     <header>
         <div class="logo-area">DAOCS</div>
-        <div class="system-title">Sistema Centralizado de Inferencia Core AI</div>
-        <button id="btn-config" onclick="toggleSidebar()" title="Configuración del Sistema">⚙️</button>
+        <div class="system-title">Sistema centralizado de detección</div>
+        <button id="btn-config" onclick="toggleSidebar()" title="Abrir configuración" aria-label="Abrir configuración" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" aria-hidden="true">
+                <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6" />
+            </svg>
+        </button>
     </header>
 
     <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
 
     <div id="sidebar">
+        <div class="sidebar-header">
+            <span class="sidebar-title">Configuración del sistema</span>
+            <button class="sidebar-close" onclick="toggleSidebar()" title="Cerrar configuración" aria-label="Cerrar configuración">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+            </button>
+        </div>
         <div class="config-section">
-            <h3>Modelos Neuronal Espacial</h3>
+            <h3>Modelos de análisis</h3>
             <div class="control-row">
                 <span>Modelo de objetos peligrosos</span>
                 <input type="checkbox" id="cfg_armas" {% if config_ram['cfg_armas'] %}checked{% endif %} onchange="updateConfig()">
@@ -444,18 +651,18 @@
                 <span>Modelo de comportamiento</span>
                 <input type="checkbox" id="cfg_comportamiento" {% if config_ram['cfg_comportamiento'] %}checked{% endif %} onchange="updateConfig()">
             </div>
-            <div class="control-row" style="margin-top: 4px; border-top: 1px solid #1c1f24; padding-top: 8px;">
-                <span style="color: var(--accent); font-weight: 500;">Modo Depuración (Debug)</span>
+            <div class="control-row debug-row">
+                <span>Modo de depuración</span>
                 <input type="checkbox" id="cfg_debug" {% if config_ram['cfg_debug'] %}checked{% endif %} onchange="updateConfig()">
             </div>
         </div>
 
         <div class="config-section">
-            <h3>Parámetros de Umbral</h3>
+            <h3>Umbrales de detección</h3>
             
-            <!-- 🎯 UMBRAL INDEPENDIENTE: DETECCIÓN DE ARMAS -->
+            <!-- Umbral de detección de armas -->
             <div class="control-row">
-                <span>Confianza Armas</span>
+                <span>Confianza de armas</span>
                 <input type="number" id="num_confianza_armas" class="input-number-precise" min="0.1" max="0.9" step="0.05" 
                     value="{{ '%0.2f' | format(config_ram['cfg_confianza_armas'] | float) }}" 
                     onchange="syncInput('cfg_confianza_armas', this.value); updateConfig()">
@@ -464,9 +671,9 @@
                 value="{{ config_ram['cfg_confianza_armas'] }}" 
                 oninput="syncInput('num_confianza_armas', this.value); updateConfig()">
 
-            <!-- 🎯 UMBRAL INDEPENDIENTE: COMPORTAMIENTO HOSTIL -->
+            <!-- Umbral de detección de comportamiento hostil -->
             <div class="control-row" style="margin-top: 12px;">
-                <span>Confianza Comportamiento</span>
+                <span>Confianza de comportamiento</span>
                 <input type="number" id="num_confianza_comportamiento" class="input-number-precise" min="0.1" max="0.9" step="0.05" 
                     value="{{ '%0.2f' | format(config_ram['cfg_confianza_comportamiento'] | float) }}" 
                     onchange="syncInput('cfg_confianza_comportamiento', this.value); updateConfig()">
@@ -477,23 +684,78 @@
         </div>
 
         <div class="config-section">
-            <h3>Memoria Volátil (Buffers)</h3>
+            <h3>Duración de las grabaciones</h3>
             <div class="control-row">
-                <span>Pre-registro (Segundos)</span>
+                <span>Tiempo previo (segundos)</span>
                 <input type="number" id="num_prebuffer" class="input-number-precise" min="1" max="10" step="1" value="{{ config_ram['cfg_prebuffer'] | int }}" onchange="syncInput('cfg_prebuffer', this.value); updateConfig()">
             </div>
             <input type="range" id="cfg_prebuffer" min="1" max="10" step="1" value="{{ config_ram['cfg_prebuffer'] }}" oninput="syncInput('num_prebuffer', this.value); updateConfig()">
             
             <div class="control-row">
-                <span>Post-registro (Segundos)</span>
+                <span>Tiempo posterior (segundos)</span>
                 <input type="number" id="num_postbuffer" class="input-number-precise" min="1" max="15" step="1" value="{{ config_ram['cfg_postbuffer'] | int }}" onchange="syncInput('cfg_postbuffer', this.value); updateConfig()">
             </div>
             <input type="range" id="cfg_postbuffer" min="1" max="15" step="1" value="{{ config_ram['cfg_postbuffer'] }}" oninput="syncInput('num_postbuffer', this.value); updateConfig()">
         </div>
 
-        <div style="margin-top: auto; display: flex; flex-direction: column; gap: 10px;">
-            <button class="btn-panel primary" onclick="saveConfigPermanently()">Confirmar Cambios Permanente</button>
-            <button class="btn-panel" onclick="restoreDefaults()">Restablecer Valores de Fábrica</button>
+        <div class="config-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--panel-border); padding-bottom: 9px;">
+                <h3 style="border-bottom: none; padding-bottom: 0; margin: 0;">Gestión de Cámaras</h3>
+                <span style="font-size: 0.65rem; color: var(--text-muted); font-family: var(--font-mono);">USB / RTSP / Video</span>
+            </div>
+            
+            <!-- Lista de cámaras configuradas actualmente -->
+            <div id="camera-list-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px;">
+                <!-- Cámaras cargadas dinámicamente -->
+            </div>
+            
+            <!-- Botones de descubrimiento inteligente -->
+            <div style="display: flex; gap: 6px; margin-top: 4px;">
+                <button class="btn-panel" id="btn-scan-local" style="font-size: 0.65rem; padding: 6px 8px; flex: 1; border-color: rgba(0,230,118,0.4); color: var(--accent-success); background: rgba(0,230,118,0.06);" onclick="scanLocalCameras()">
+                    🔍 Escanear USB
+                </button>
+                <button class="btn-panel" id="btn-scan-rtsp" style="font-size: 0.65rem; padding: 6px 8px; flex: 1; border-color: rgba(79,195,247,0.4); color: var(--accent); background: rgba(79,195,247,0.06);" onclick="scanNetworkRTSP()">
+                    🌐 Buscar en Red
+                </button>
+            </div>
+
+            <!-- Contenedor de resultados de escaneo de cámaras locales -->
+            <div id="scanned-cameras-box" style="display: none; flex-direction: column; gap: 6px; background: #080a0c; border: 1px solid #252d37; border-radius: 4px; padding: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 0.68rem; font-weight: 700; color: var(--accent-success); font-family: var(--font-mono);">CÁMARAS LOCALES DETECTADAS</span>
+                    <button style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.75rem;" onclick="document.getElementById('scanned-cameras-box').style.display='none'">✕</button>
+                </div>
+                <div id="scanned-cameras-list" style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;"></div>
+            </div>
+
+            <!-- Contenedor de resultados de escaneo de red RTSP -->
+            <div id="scanned-rtsp-box" style="display: none; flex-direction: column; gap: 6px; background: #080a0c; border: 1px solid #252d37; border-radius: 4px; padding: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 0.68rem; font-weight: 700; color: var(--accent); font-family: var(--font-mono);">DISPOSITIVOS RTSP EN RED</span>
+                    <button style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.75rem;" onclick="document.getElementById('scanned-rtsp-box').style.display='none'">✕</button>
+                </div>
+                <div id="scanned-rtsp-list" style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"></div>
+            </div>
+
+            <!-- Formulario de agregar/actualizar cámara manual -->
+            <div style="display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--panel-border);">
+                <input type="text" id="new_cam_name" placeholder="Nombre (ej. entrada, patio, webcam)" class="input-number-precise" style="width: 100%; text-align: left; padding: 6px 8px; font-size: 0.75rem;">
+                
+                <div style="display: flex; gap: 6px;">
+                    <input type="text" id="new_cam_source" placeholder="Índice USB (0, 1), RTSP o archivo .mp4" class="input-number-precise" style="flex: 1; text-align: left; padding: 6px 8px; font-size: 0.75rem;">
+                    <button class="btn-panel" id="btn-test-cam" style="width: auto; padding: 6px 10px; font-size: 0.65rem; border-color: rgba(255,179,0,0.5); color: var(--accent-warning);" onclick="testCameraSource()" title="Probar si la fuente funciona antes de agregarla">⚡ Probar</button>
+                </div>
+
+                <!-- Caja de previsualización de prueba -->
+                <div id="test-preview-box" style="display: none; align-items: center; gap: 8px; background: #0a0d10; border: 1px solid #202730; border-radius: 4px; padding: 6px;"></div>
+
+                <button class="btn-panel primary" style="margin-top: 2px;" onclick="addNewCamera()">+ Añadir / Actualizar Cámara</button>
+            </div>
+        </div>
+
+        <div class="sidebar-actions">
+            <button class="btn-panel primary" onclick="saveConfigPermanently()">Guardar cambios</button>
+            <button class="btn-panel" onclick="restoreDefaults()">Restablecer valores predeterminados</button>
         </div>
     </div>
 
@@ -504,23 +766,23 @@
                 <div class="cam-card analyzing" id="card-{{ cam|lower }}">
                     <div class="cam-header">
                         <div class="cam-title-area">
-                            <button class="btn-cam-back" id="btn-back-{{ cam|lower }}" onclick="toggleFocus('{{ cam|lower }}')" title="Volver al panel general">◂</button>
-                            <span class="cam-title">Origen: {{ cam|upper }}</span>
+                            <button class="btn-cam-back" id="btn-back-{{ cam|lower }}" onclick="toggleFocus('{{ cam|lower }}')" title="Volver al panel general">VOLVER</button>
+                            <span class="cam-title">Cámara: {{ cam|upper }}</span>
                         </div>
                         <div class="cam-controls-area">
                             <div class="status-indicator">
                                 <span class="status-text" id="status-text-{{ cam|lower }}">
-                                    <span style="background: rgba(0,230,118,0.10); color: var(--accent-success); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-success); font-weight: 500;">OK_ACTIVE</span>
+                                    <span style="background: rgba(0,230,118,0.10); color: var(--accent-success); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-success); font-weight: 500;">ACTIVA</span>
                                 </span>
                                 <div class="status-beacon"></div>
                             </div>
-                            <button class="btn-cam-action" id="btn-zoom-{{ cam|lower }}" onclick="toggleFocus('{{ cam|lower }}')" title="Maximizar canal">⛶</button>
+                            <button class="btn-cam-action" id="btn-zoom-{{ cam|lower }}" onclick="toggleFocus('{{ cam|lower }}')" title="Ampliar cámara" aria-label="Ampliar cámara">⛶</button>
                         </div>
                     </div>
                     <div class="video-container">
                         <div class="video-overlay-error" id="overlay-error-{{ cam|lower }}">
-                            <span>⚠️ TRANSMISIÓN INTERRUMPIDA</span>
-                            <span style="font-size:0.65rem; color:var(--text-muted)">Cámara o fuente RTSP no disponible</span>
+                            <span>TRANSMISIÓN INTERRUMPIDA</span>
+                            <span style="font-size:0.65rem; color:var(--text-muted)">La cámara o la fuente RTSP no está disponible</span>
                         </div>
                         <iframe data-cam="{{ cam|lower }}" loading="lazy" allow="autoplay" scrolling="no" id="iframe-{{ cam|lower }}"></iframe>
                     </div>
@@ -533,7 +795,7 @@
     <div id="bottom-system">
         <div id="live-alerts">
             <div class="panel-title-bar">
-                <span class="panel-title" style="color: var(--accent-alert);">Eventos de Riesgo Crítico</span>
+                <span class="panel-title" style="color: var(--accent-alert);">Alertas de seguridad</span>
             </div>
             <div class="log-feed" id="alert-feed">
                 <div class="alert-item">
@@ -545,8 +807,13 @@
 
         <div id="terminal-container">
             <div class="panel-title-bar">
-                <span class="panel-title">Salida del Núcleo de Consola</span>
-                <button class="btn-toggle-sub" id="btn-min-term" onclick="toggleTerminal()">[-] MINIMIZAR</button>
+                <span class="panel-title">Registro del sistema</span>
+                <button class="btn-toggle-sub" id="btn-min-term" onclick="toggleTerminal()" title="Ocultar registro" aria-expanded="true">
+                    <span class="toggle-label">OCULTAR</span>
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" aria-hidden="true">
+                        <path d="M3 6l5 5 5-5" />
+                    </svg>
+                </button>
             </div>
             <div class="log-feed" id="terminal-feed"></div>
         </div>
@@ -561,8 +828,14 @@
             String(ahora.getHours()).padStart(2, '0') + ':' + String(ahora.getMinutes()).padStart(2, '0');
 
         function toggleSidebar() {
-            document.getElementById('sidebar').classList.toggle('open');
-            document.getElementById('sidebar-overlay').classList.toggle('open');
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebar-overlay');
+            const button = document.getElementById('btn-config');
+            const isOpen = sidebar.classList.toggle('open');
+            overlay.classList.toggle('open', isOpen);
+            button.setAttribute('aria-expanded', String(isOpen));
+            button.setAttribute('aria-label', isOpen ? 'Cerrar configuración' : 'Abrir configuración');
+            button.title = isOpen ? 'Cerrar configuración' : 'Abrir configuración';
         }
 
         function syncInput(targetId, value) {
@@ -574,14 +847,21 @@
         function toggleTerminal() {
             const bottomSystem = document.getElementById('bottom-system');
             const btn = document.getElementById('btn-min-term');
+            const label = btn.querySelector('.toggle-label');
             
             if (terminalAbierta) {
                 bottomSystem.classList.add('minimized');
-                btn.innerText = "[+] MAXIMIZAR";
+                btn.classList.add('is-collapsed');
+                label.textContent = "MOSTRAR";
+                btn.setAttribute('aria-expanded', 'false');
+                btn.title = 'Mostrar registro';
                 terminalAbierta = false;
             } else {
                 bottomSystem.classList.remove('minimized');
-                btn.innerText = "[-] MINIMIZAR";
+                btn.classList.remove('is-collapsed');
+                label.textContent = "OCULTAR";
+                btn.setAttribute('aria-expanded', 'true');
+                btn.title = 'Ocultar registro';
                 terminalAbierta = true;
             }
         }
@@ -610,7 +890,7 @@
         }
 
         /* =========================================================================
-        PASARELA DE CONTROL: ENVÍO DE PARÁMETROS EN TIEMPO REAL AL BACKEND
+        ENVÍO DE PARÁMETROS AL SERVIDOR
         ========================================================================= */
 
         function updateConfig() {
@@ -631,7 +911,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             })
-            .catch(err => console.error("ERROR_ACTUALIZACION_RAM:", err));
+            .catch(err => console.error("No se pudo actualizar la configuración:", err));
         }
 
         function saveConfigPermanently() {
@@ -645,7 +925,7 @@
                     toggleSidebar();
                 }
             })
-            .catch(err => console.error("ERROR_PERSISTENCIA_DISCO:", err));
+            .catch(err => console.error("No se pudo guardar la configuración:", err));
         }
 
         function restoreDefaults() {
@@ -685,18 +965,285 @@
                     toggleSidebar();
                 }
             })
-            .catch(err => console.error("ERROR_RESTAURACION_FABRICA:", err));
+            .catch(err => console.error("No se pudieron restablecer los valores predeterminados:", err));
         }
 
         /* =========================================================================
-        NÚCLEO DE ACTUALIZACIÓN EN TIEMPO REAL
+        GESTIÓN DINÁMICA DE CÁMARAS (API REST)
+        ========================================================================= */
+        function loadCameras() {
+            fetch('/api/cameras')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.code === 200 && data.cameras) {
+                        renderCameraList(data.cameras);
+                    }
+                })
+                .catch(err => console.error("No se pudieron cargar las cámaras:", err));
+        }
+
+        function renderCameraList(cameras) {
+            const container = document.getElementById('camera-list-container');
+            if (!container) return;
+            container.innerHTML = '';
+            
+            for (const [name, source] of Object.entries(cameras)) {
+                const row = document.createElement('div');
+                row.style.display = 'flex';
+                row.style.justifyContent = 'space-between';
+                row.style.alignItems = 'center';
+                row.style.padding = '5px 8px';
+                row.style.background = '#0d1013';
+                row.style.border = '1px solid #222933';
+                row.style.borderRadius = '3px';
+                row.style.fontSize = '0.72rem';
+                
+                row.innerHTML = `
+                    <div style="display: flex; flex-direction: column; overflow: hidden; max-width: 75%;">
+                        <span style="font-weight: 700; color: var(--text-main); text-transform: uppercase;">${name}</span>
+                        <span style="color: var(--text-muted); font-size: 0.65rem; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${source}</span>
+                    </div>
+                    <button style="background: rgba(255, 23, 68, 0.15); color: var(--accent-alert); border: 1px solid rgba(255, 23, 68, 0.3); border-radius: 2px; padding: 2px 6px; font-size: 0.65rem; cursor: pointer;" onclick="deleteCamera('${name}')">✕</button>
+                `;
+                container.appendChild(row);
+            }
+        }
+
+        function addNewCamera() {
+            const nameInput = document.getElementById('new_cam_name');
+            const sourceInput = document.getElementById('new_cam_source');
+            const name = nameInput.value.trim().toLowerCase();
+            const source = sourceInput.value.trim();
+
+            if (!name || !source) {
+                alert("Por favor introduce el nombre y la fuente (USB o RTSP) de la cámara.");
+                return;
+            }
+
+            fetch('/api/cameras', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, source: source })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.code === 200) {
+                    nameInput.value = '';
+                    sourceInput.value = '';
+                    loadCameras();
+                    addTerminalLog('success', `Cámara '${name}' registrada. Recargando vista...`);
+                    setTimeout(() => location.reload(), 1200);
+                } else {
+                    alert(data.message || "Error al registrar cámara");
+                }
+            })
+            .catch(err => console.error("Error al registrar cámara:", err));
+        }
+
+        function deleteCamera(camName) {
+            if (!confirm(`¿Eliminar la cámara '${camName}' de la configuración?`)) return;
+
+            fetch(`/api/cameras/${encodeURIComponent(camName)}`, {
+                method: 'DELETE'
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.code === 200) {
+                    loadCameras();
+                    addTerminalLog('warn', `Cámara '${camName}' eliminada. Actualizando panel...`);
+                    setTimeout(() => location.reload(), 1200);
+                }
+            })
+            .catch(err => console.error("Error al eliminar cámara:", err));
+        }
+
+        function scanLocalCameras() {
+            const btn = document.getElementById('btn-scan-local');
+            const box = document.getElementById('scanned-cameras-box');
+            const list = document.getElementById('scanned-cameras-list');
+            
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Escaneando...';
+            addTerminalLog('info', 'Iniciando escaneo de cámaras USB locales en el sistema...');
+
+            fetch('/api/scan_cameras')
+                .then(res => res.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.innerHTML = '🔍 Escanear USB';
+                    
+                    if (data.code === 200 && data.cameras && data.cameras.length > 0) {
+                        box.style.display = 'flex';
+                        list.innerHTML = '';
+                        addTerminalLog('success', `Se encontraron ${data.cameras.length} cámara(s) USB conectada(s).`);
+
+                        data.cameras.forEach(cam => {
+                            const item = document.createElement('div');
+                            item.style.display = 'flex';
+                            item.style.alignItems = 'center';
+                            item.style.gap = '8px';
+                            item.style.padding = '6px';
+                            item.style.background = '#111418';
+                            item.style.border = '1px solid #28323e';
+                            item.style.borderRadius = '3px';
+
+                            item.innerHTML = `
+                                <img src="${cam.thumbnail}" style="width: 58px; height: 36px; object-fit: cover; border-radius: 2px; border: 1px solid #334050;" alt="Preview">
+                                <div style="display: flex; flex-direction: column; flex: 1; min-width: 0;">
+                                    <span style="font-size: 0.72rem; font-weight: 700; color: var(--text-main); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${cam.name}</span>
+                                    <span style="font-size: 0.64rem; color: var(--accent); font-family: var(--font-mono);">Índice: <b>${cam.index}</b> | ${cam.resolution} @ ${cam.fps} FPS</span>
+                                </div>
+                                <button class="btn-panel" style="width: auto; padding: 4px 7px; font-size: 0.62rem; color: var(--accent-success); border-color: rgba(0,230,118,0.4);" onclick="useDiscoveredSource(${cam.index}, '${cam.name.replace(/'/g, '')}')">
+                                    Usar
+                                </button>
+                            `;
+                            list.appendChild(item);
+                        });
+                    } else {
+                        box.style.display = 'none';
+                        alert("No se detectaron cámaras USB disponibles o activas.");
+                        addTerminalLog('warn', 'No se detectaron cámaras USB activas.');
+                    }
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.innerHTML = '🔍 Escanear USB';
+                    console.error("Error al escanear cámaras:", err);
+                    addTerminalLog('error', 'Error durante el escaneo de cámaras USB.');
+                });
+        }
+
+        function scanNetworkRTSP() {
+            const btn = document.getElementById('btn-scan-rtsp');
+            const box = document.getElementById('scanned-rtsp-box');
+            const list = document.getElementById('scanned-rtsp-list');
+
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Buscando...';
+            addTerminalLog('info', 'Buscando puertos RTSP (554) en la subred local...');
+
+            fetch('/api/scan_network_rtsp')
+                .then(res => res.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.innerHTML = '🌐 Buscar en Red';
+
+                    if (data.code === 200 && data.data && data.data.found && data.data.found.length > 0) {
+                        box.style.display = 'flex';
+                        list.innerHTML = '';
+                        addTerminalLog('success', `Se encontraron ${data.data.found.length} dispositivo(s) RTSP en la subred ${data.data.subnet}.x.`);
+
+                        data.data.found.forEach(dev => {
+                            const item = document.createElement('div');
+                            item.style.display = 'flex';
+                            item.style.alignItems = 'center';
+                            item.style.justifyContent = 'space-between';
+                            item.style.padding = '6px 8px';
+                            item.style.background = '#111418';
+                            item.style.border = '1px solid #28323e';
+                            item.style.borderRadius = '3px';
+
+                            item.innerHTML = `
+                                <div style="display: flex; flex-direction: column;">
+                                    <span style="font-size: 0.72rem; font-weight: 700; color: var(--accent); font-family: var(--font-mono);">${dev.ip}:${dev.port}</span>
+                                    <span style="font-size: 0.62rem; color: var(--text-muted); font-family: var(--font-mono);">Puerto RTSP Abierto</span>
+                                </div>
+                                <button class="btn-panel" style="width: auto; padding: 4px 7px; font-size: 0.62rem; color: var(--accent); border-color: rgba(79,195,247,0.4);" onclick="useDiscoveredSource('${dev.suggested_url}', 'cam_${dev.ip.split('.').pop()}')">
+                                    Usar RTSP
+                                </button>
+                            `;
+                            list.appendChild(item);
+                        });
+                    } else {
+                        box.style.display = 'none';
+                        alert("No se encontraron cámaras IP con puerto RTSP (554) abierto en la red local.");
+                        addTerminalLog('warn', 'No se encontraron cámaras RTSP en la red local.');
+                    }
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.innerHTML = '🌐 Buscar en Red';
+                    console.error("Error escaneando RTSP:", err);
+                    addTerminalLog('error', 'Error al escanear la red local para RTSP.');
+                });
+        }
+
+        function testCameraSource() {
+            const sourceInput = document.getElementById('new_cam_source');
+            const previewBox = document.getElementById('test-preview-box');
+            const btn = document.getElementById('btn-test-cam');
+            const source = sourceInput.value.trim();
+
+            if (!source) {
+                alert("Introduce un índice USB, URL RTSP o ruta de video para probar.");
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '⏳';
+            previewBox.style.display = 'flex';
+            previewBox.innerHTML = '<span style="font-size: 0.68rem; color: var(--text-muted); font-family: var(--font-mono);">Conectando con la fuente...</span>';
+
+            fetch('/api/test_camera', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source: source })
+            })
+            .then(res => res.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = '⚡ Probar';
+
+                if (data.status === 'SUCCESS') {
+                    previewBox.innerHTML = `
+                        <img src="${data.thumbnail}" style="width: 60px; height: 38px; object-fit: cover; border-radius: 2px; border: 1px solid var(--accent-success);" alt="Preview">
+                        <div style="display: flex; flex-direction: column;">
+                            <span style="font-size: 0.68rem; font-weight: 700; color: var(--accent-success); font-family: var(--font-mono);">✓ CONEXIÓN EXITOSA</span>
+                            <span style="font-size: 0.62rem; color: var(--text-muted); font-family: var(--font-mono);">${data.resolution} @ ${data.fps} FPS</span>
+                        </div>
+                    `;
+                    addTerminalLog('success', `Prueba de fuente exitosa: ${source} (${data.resolution} @ ${data.fps} FPS).`);
+                } else {
+                    previewBox.innerHTML = `
+                        <div style="display: flex; flex-direction: column;">
+                            <span style="font-size: 0.68rem; font-weight: 700; color: var(--accent-alert); font-family: var(--font-mono);">✕ NO SE PUDO CONECTAR</span>
+                            <span style="font-size: 0.62rem; color: var(--text-muted);">${data.message || 'Verifica el índice, cable USB o URL RTSP.'}</span>
+                        </div>
+                    `;
+                    addTerminalLog('error', `Prueba de fuente fallida para '${source}': ${data.message}`);
+                }
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.innerHTML = '⚡ Probar';
+                previewBox.innerHTML = '<span style="font-size: 0.68rem; color: var(--accent-alert);">Error en la petición de prueba.</span>';
+                console.error("Error al probar fuente:", err);
+            });
+        }
+
+        function useDiscoveredSource(source, suggestedName) {
+            document.getElementById('new_cam_source').value = source;
+            if (suggestedName && !document.getElementById('new_cam_name').value.trim()) {
+                const cleanName = suggestedName.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 15);
+                document.getElementById('new_cam_name').value = cleanName;
+            }
+            // Disparar prueba de conexión inmediata
+            testCameraSource();
+        }
+
+        // Cargar lista de cámaras al abrir
+        document.addEventListener("DOMContentLoaded", loadCameras);
+
+        
+        /* =========================================================================
+        ACTUALIZACIÓN EN TIEMPO REAL
         ========================================================================= */
         
         function updateCameraState(camName, state) {
             if (!camName || !state) return;
             const cleanName = camName.toLowerCase().trim();
             
-            // 🚀 Búsqueda directa por ID
+            // Localizar los elementos asociados con la cámara.
             const card = document.getElementById(`card-${cleanName}`);
             const textSpan = document.getElementById(`status-text-${cleanName}`);
             const overlay = document.getElementById(`overlay-error-${cleanName}`);
@@ -710,14 +1257,14 @@
 
             if (state === 'detecting') {
                 card.classList.add('detecting');
-                textSpan.innerHTML = '<span style="background: rgba(255,23,68,0.15); color: var(--accent-alert); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-alert); font-weight: 700;">CRIT_EVENT</span>';
+                textSpan.innerHTML = '<span style="background: rgba(255,23,68,0.15); color: var(--accent-alert); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-alert); font-weight: 700;">ALERTA</span>';
             } else if (state === 'error') {
                 card.classList.add('error');
-                textSpan.innerHTML = '<span style="background: rgba(255,179,0,0.15); color: var(--accent-warning); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-warning); font-weight: 700;">SYS_ERROR</span>';
+                textSpan.innerHTML = '<span style="background: rgba(255,179,0,0.15); color: var(--accent-warning); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-warning); font-weight: 700;">SIN SEÑAL</span>';
                 if (overlay) overlay.style.display = 'flex';
             } else if (state === 'analyzing') {
                 card.classList.add('analyzing');
-                textSpan.innerHTML = '<span style="background: rgba(0,230,118,0.10); color: var(--accent-success); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-success); font-weight: 500;">OK_ACTIVE</span>';
+                textSpan.innerHTML = '<span style="background: rgba(0,230,118,0.10); color: var(--accent-success); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--accent-success); font-weight: 500;">ACTIVA</span>';
             }
         }
 
@@ -739,16 +1286,16 @@
                 prefix = '<span style="color: var(--accent); font-weight:bold;">[  INFO  ]</span> ';
             } else if (type === 'error') {
                 logLine.classList.add('error-log');
-                prefix = '<span style="color: var(--accent-alert); font-weight:bold;">[  FALLO  ]</span> ';
+                prefix = '<span style="color: var(--accent-alert); font-weight:bold;">[ ERROR ]</span> ';
             } else if (type === 'warn') {
                 logLine.classList.add('warn');
                 prefix = '<span style="color: var(--accent-warning); font-weight:bold;">[  AVISO  ]</span> ';
             }
 
-            logLine.innerHTML = `<span class="timestamp">${timeStr}</span> ── ${prefix}${message.toUpperCase()}`;
+            logLine.innerHTML = `<span class="timestamp">${timeStr}</span> ── ${prefix}${message}`;
             feed.appendChild(logLine);
 
-            // 🧹 Limitar historial visual a un máximo de 100 renglones
+            // Conservar los 100 registros más recientes.
             while (feed.childNodes.length > 100) {
                 feed.removeChild(feed.firstChild);
             }
@@ -766,11 +1313,11 @@
 
             const alertItem = document.createElement('div');
             alertItem.className = 'alert-item';
-            alertItem.innerHTML = `<span>${text.toUpperCase()}</span><span class="time">${timeStr}</span>`;
+            alertItem.innerHTML = `<span>${text}</span><span class="time">${timeStr}</span>`;
             
             feed.insertBefore(alertItem, feed.firstChild);
 
-            // 🧹 Limitar máximo de alertas visibles en pantalla a 50
+            // Conservar las 50 alertas más recientes.
             while (feed.childNodes.length > 50) {
                 feed.removeChild(feed.lastChild);
             }
@@ -791,13 +1338,13 @@
                         }
                     }
                 })
-                .catch(err => console.error("ERROR_SINCRONIZACION_INICIAL:", err));
+                .catch(err => console.error("No se pudo obtener el estado inicial:", err));
         }
 
         document.addEventListener("DOMContentLoaded", sincronizarEstadoInicial);
 
         // =========================================================================
-        // PROTOCOLO SSE
+        // RECEPCIÓN DE EVENTOS SSE
         // =========================================================================
         const eventSource = new EventSource('/stream-dashboard');
 
@@ -820,7 +1367,7 @@
                     addCriticalAlert(payload.message);
                 }
             } catch (err) {
-                // Silenciar pings vacíos
+                // Ignorar mensajes de mantenimiento sin contenido utilizable.
             }
         });
 
@@ -831,3 +1378,4 @@
         };
     </script>
 </body>
+</html>

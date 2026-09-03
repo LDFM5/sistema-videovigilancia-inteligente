@@ -1,14 +1,15 @@
 """
 main.py
 
-Motor Principal de Inferencias (Edge AI Core - DAOCS)
+Motor principal de inferencia de DAOCS.
 - Sincronización de ciclo a 30 FPS reales de cámara (Pacing).
 - Despacho continuo y desacoplado de alertas (Armas y Comportamiento).
-- Normalización estricta de claves de cámara (Uppercase) para ventanas temporales.
+- Normalización de las claves de cámara para las ventanas temporales.
 - Captura explícita de excepciones en hilos de alertas.
 """
 
 import cv2
+import numpy as np
 import time
 import atexit
 import torch
@@ -18,15 +19,15 @@ import queue
 from collections import deque
 from ultralytics import YOLO
 
-# Importaciones de módulos del ecosistema core
+# Módulos del sistema.
 import config
-from cameras import initialize_cameras
+from cameras import CameraStream, initialize_cameras
 from detection import batch_detect_weapons
 from temporal_logic import initialize_windows, update_window
-from recorder import initialize_recording_state, handle_recording
+from recorder import initialize_recording_state, handle_recording, inicializar_camara_grabacion
 from streamer import RTSPStreamer
 from visualization import draw_performance_overlay
-from behavior_cnn import cargar_modelo_violencia, evaluar_secuencia_violencia
+from behavior_cnn import cargar_modelo_violencia, evaluar_secuencias_violencia_batch
 
 _registro_estados_global = {}
 
@@ -42,16 +43,16 @@ def _ejecutar_alerta_segura(cam_name, log_type, message_payload, shared_state):
             shared_state=shared_state
         )
     except Exception as e:
-        print(f"\n[ERROR_ALERTA] Fallo al despachar alerta de {log_type} en {cam_name}: {e}")
+        print(f"\n[ERROR] No se pudo enviar la alerta {log_type} de {cam_name}: {e}")
         traceback.print_exc()
 
 
 def ejecutar_sistema_principal(shared_state):
     if shared_state is None:
-        print("SYS_CORE_ERROR: NO SE PROVEYÓ EL PUNTERO SHARED_STATE.")
+        print("[ERROR] No se recibió el estado compartido del sistema.")
         return
 
-    print("SYS_CORE: INICIALIZANDO NÚCLEO INFALIBLE DE INFERENCIAS EDGE AI...")
+    print("[INFO] Iniciando el motor de inferencia.")
 
     # ======================================================
     # 1. ESTADOS DE MODELOS Y HARDWARE
@@ -91,7 +92,10 @@ def ejecutar_sistema_principal(shared_state):
     # ======================================================
     cameras, camera_resolutions_raw, camera_fps_raw = initialize_cameras()
     
-    # Normalización estricta de claves a Mayúsculas para evitar descalces en dicts
+    # Normalizar las claves de cámara en mayúsculas para mantener la misma convención.
+    camera_resolutions = {k.upper(): v for k, v in camera_resolutions_raw.items()}
+    camera_fps = {k.upper(): v for k, v in camera_fps_raw.items()}
+
     camera_resolutions = {k.upper(): v for k, v in camera_resolutions_raw.items()}
     camera_fps = {k.upper(): v for k, v in camera_fps_raw.items()}
 
@@ -101,11 +105,7 @@ def ejecutar_sistema_principal(shared_state):
     historial_secuencias = {cam_name.upper(): deque() for cam_name in cameras}
     historial_predicciones = {cam_name.upper(): deque(maxlen=8) for cam_name in cameras}
     ultimo_frame_procesado = {cam_name.upper(): None for cam_name in cameras}
-    HISTORIAL_COMPORTAMIENTO_SEG = 3.0
-
-    # La red TSM se ejecuta fuera del bucle de video. Solo se admite una tarea
-    # pendiente por cámara, evitando tanto pausas como una cola de análisis viejo.
-    cola_inferencia_comportamiento = queue.Queue(maxsize=max(1, len(cameras)))
+    cola_inferencia_comportamiento = queue.Queue(maxsize=max(8, len(cameras) * 2))
     cola_resultados_comportamiento = queue.Queue()
     inferencia_comportamiento_en_vuelo = {
         cam_name.upper(): False for cam_name in cameras
@@ -115,31 +115,48 @@ def ejecutar_sistema_principal(shared_state):
         cam_name.upper(): 0.0 for cam_name in cameras
     }
 
+    # ======================================================
+    # WORKER DE INFERENCIA EN LOTE PARA COMPORTAMIENTO (TSM)
+    # ======================================================
     def worker_inferencia_comportamiento():
         while True:
-            (
-                cam_upper,
-                generacion,
-                modelo,
-                historial_snapshot,
-                umbral,
-            ) = cola_inferencia_comportamiento.get()
+            batch_tasks = []
             try:
-                clase, score = evaluar_secuencia_violencia(
-                    modelo,
-                    dispositivo_ia,
-                    historial_snapshot,
-                    umbral_confianza=umbral,
+                primero = cola_inferencia_comportamiento.get()
+                batch_tasks.append(primero)
+                # Drenar rápidamente cualquier otra cámara que haya entrado a la cola
+                while not cola_inferencia_comportamiento.empty():
+                    try:
+                        batch_tasks.append(cola_inferencia_comportamiento.get_nowait())
+                    except queue.Empty:
+                        break
+            except Exception:
+                continue
+
+            if not batch_tasks:
+                continue
+
+            # Extraer modelo y empaquetar para evaluación en lote
+            modelo_actual = batch_tasks[0][2]
+            items_eval = [(item[0], item[3], item[4]) for item in batch_tasks]
+
+            try:
+                resultados = evaluar_secuencias_violencia_batch(
+                    modelo_actual, dispositivo_ia, items_eval
                 )
-                cola_resultados_comportamiento.put(
-                    (cam_upper, generacion, clase, score, None)
-                )
+                for idx, (cam_k, clase, score) in enumerate(resultados):
+                    gen = batch_tasks[idx][1]
+                    cola_resultados_comportamiento.put(
+                        (cam_k, gen, clase, score, None)
+                    )
             except Exception as error:
-                cola_resultados_comportamiento.put(
-                    (cam_upper, generacion, None, 0.0, error)
-                )
+                for item in batch_tasks:
+                    cola_resultados_comportamiento.put(
+                        (item[0], item[1], None, 0.0, error)
+                    )
             finally:
-                cola_inferencia_comportamiento.task_done()
+                for _ in batch_tasks:
+                    cola_inferencia_comportamiento.task_done()
 
     threading.Thread(
         target=worker_inferencia_comportamiento,
@@ -147,13 +164,22 @@ def ejecutar_sistema_principal(shared_state):
         name="BehaviorInferenceWorker",
     ).start()
 
-    # Temporizador para inferencia TSM (cada 200 ms)
+    # Temporizador para inferencia TSM (cada 200 ms) y longitud del buffer temporal
+    HISTORIAL_COMPORTAMIENTO_SEG = 3.0
     ultimo_tiempo_inferencia = {cam_name.upper(): 0.0 for cam_name in cameras}
     INTERVALO_INFERENCIA_SEG = 0.20
 
     # Retención de alerta (Hysteresis de 2.5s)
     ultimo_tiempo_alerta_violencia = {cam_name.upper(): 0.0 for cam_name in cameras}
     TIEMPO_RETENCION_ALERTA_SEG = 2.5
+
+    # ======================================================
+    # MOTION GATING (FILTRO DE MOVIMIENTO CON HISTÉRESIS)
+    # ======================================================
+    MOTION_DIFF_THRESHOLD = 0.45   # Sensible a movimientos corporales ligeros
+    MOTION_HOLD_SECONDS = 2.50     # Histéresis: mantener activa la IA 2.5s tras el último movimiento
+    ultimo_frame_gris = {cam_name.upper(): None for cam_name in cameras}
+    ultimo_tiempo_movimiento = {cam_name.upper(): time.monotonic() for cam_name in cameras}
 
     # Ventanas temporales inicializadas con claves en MAYÚSCULAS
     windows_armas = initialize_windows(camera_fps, config.WINDOW_SECONDS)
@@ -175,7 +201,7 @@ def ejecutar_sistema_principal(shared_state):
         )
 
     def limpieza_segura():
-        print("\nSYS_CORE: LIBERANDO RECURSOS DE HARDWARE...")
+        print("\n[INFO] Liberando los recursos del sistema.")
         for cap in cameras.values():
             if hasattr(cap, 'release'): cap.release()
             elif hasattr(cap, 'stop'): cap.stop()
@@ -196,13 +222,88 @@ def ejecutar_sistema_principal(shared_state):
     TARGET_FPS = 30.0
     TARGET_FRAME_TIME = 1.0 / TARGET_FPS
     tiempo_anterior = time.monotonic()
-    fps_mostrar = 30.0
+    fps_mostrar = 0.0
+    ultimo_sync_camaras = 0.0
 
     # ======================================================
     # 3. BUCLE PRINCIPAL DE INFERENCIA CONTINUA
     # ======================================================
     while True:
         inicio_ciclo = time.monotonic()
+
+        # Sincronización dinámica de cámaras en caliente cada 2.5 segundos
+        if inicio_ciclo - ultimo_sync_camaras >= 2.5:
+            ultimo_sync_camaras = inicio_ciclo
+            try:
+                config_cams = config.obtener_camaras_configuradas()
+                
+                # A) Agregar nuevas cámaras registradas en la web
+                for c_name, c_source in config_cams.items():
+                    c_upper = c_name.upper()
+                    if c_name not in cameras:
+                        print(f"[INFO] Agregando nueva cámara al sistema en caliente: {c_name} -> {c_source}")
+                        cap = CameraStream(c_name, c_source)
+                        cap.shared_state = shared_state
+                        cameras[c_name] = cap
+                        camera_resolutions[c_upper] = (cap.width, cap.height)
+                        camera_fps[c_upper] = cap.fps
+                        
+                        target_w = 800
+                        target_h = int((target_w / max(1, cap.width)) * cap.height)
+                        if target_h % 2 != 0: target_h += 1
+                        
+                        streamers[c_upper] = RTSPStreamer(
+                            c_name, width=target_w, height=target_h, fps=15, shared_state=shared_state
+                        )
+                        
+                        historial_secuencias[c_upper] = deque()
+                        historial_predicciones[c_upper] = deque(maxlen=8)
+                        ultimo_frame_procesado[c_upper] = None
+                        inferencia_comportamiento_en_vuelo[c_upper] = False
+                        ultimo_error_inferencia_comportamiento[c_upper] = 0.0
+                        ultimo_frame_gris[c_upper] = None
+                        ultimo_tiempo_movimiento[c_upper] = time.monotonic()
+                        windows_armas[c_upper] = deque(maxlen=int(cap.fps * config.WINDOW_SECONDS))
+                        alert_state_armas[c_upper] = False
+                        alertas_enviadas_evento[c_upper] = set()
+                        recording_state[c_upper] = inicializar_camara_grabacion(c_upper, config.PRE_BUFFER_SECONDS)
+                        
+                        shared_state.emitir_evento_dashboard('camera_status', {
+                            "camera": c_name.lower(), 
+                            "status": "analyzing"
+                        })
+                        shared_state.emitir_evento_dashboard('system_log', {
+                            "type": "success",
+                            "message": f"Cámara '{c_name}' activada y transmitiendo en vivo."
+                        })
+
+                # B) Remover cámaras eliminadas
+                cams_a_eliminar = [c_name for c_name in list(cameras.keys()) if c_name not in config_cams]
+                for c_name in cams_a_eliminar:
+                    c_upper = c_name.upper()
+                    print(f"[INFO] Removiendo cámara del sistema: {c_name}")
+                    try: cameras[c_name].release()
+                    except Exception: pass
+                    try: streamers[c_upper].cerrar()
+                    except Exception: pass
+                    cameras.pop(c_name, None)
+                    streamers.pop(c_upper, None)
+                    camera_resolutions.pop(c_upper, None)
+                    camera_fps.pop(c_upper, None)
+                    historial_secuencias.pop(c_upper, None)
+                    historial_predicciones.pop(c_upper, None)
+                    ultimo_frame_procesado.pop(c_upper, None)
+                    inferencia_comportamiento_en_vuelo.pop(c_upper, None)
+                    ultimo_error_inferencia_comportamiento.pop(c_upper, None)
+                    ultimo_frame_gris.pop(c_upper, None)
+                    ultimo_tiempo_movimiento.pop(c_upper, None)
+                    windows_armas.pop(c_upper, None)
+                    alert_state_armas.pop(c_upper, None)
+                    alertas_enviadas_evento.pop(c_upper, None)
+                    recording_state.pop(c_upper, None)
+            except Exception as e:
+                print(f"[WARN] Error sincronizando cámaras: {e}")
+
         frames_list = []
         cam_names_list = []
         frame_timestamps_list = []
@@ -273,7 +374,7 @@ def ejecutar_sistema_principal(shared_state):
                     name="ModelLoader-Weapons",
                 ).start()
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "info", "message": "NÚCLEO_IA: CARGANDO MODELO DE ARMAS EN SEGUNDO PLANO."
+                    "type": "info", "message": "Cargando el modelo de detección de armas."
                 })
             else:
                 weapon_model = None
@@ -292,7 +393,7 @@ def ejecutar_sistema_principal(shared_state):
                     name="ModelLoader-Behavior",
                 ).start()
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "info", "message": "NÚCLEO_IA: CARGANDO MODELO DE COMPORTAMIENTO EN SEGUNDO PLANO."
+                    "type": "info", "message": "Cargando el modelo de análisis de comportamiento."
                 })
             else:
                 behavior_model = None
@@ -316,12 +417,12 @@ def ejecutar_sistema_principal(shared_state):
             if error is None:
                 weapon_model = modelo_cargado
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "success", "message": "NÚCLEO_IA: MODELO DE ARMAS DESPLEGADO."
+                    "type": "success", "message": "Modelo de detección de armas disponible."
                 })
             else:
                 weapon_model = None
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "error", "message": f"FALLO MODELO ARMAS -> {str(error).upper()}"
+                    "type": "error", "message": f"No se pudo cargar el modelo de detección de armas: {error}"
                 })
 
         while True:
@@ -334,12 +435,12 @@ def ejecutar_sistema_principal(shared_state):
             if error is None:
                 behavior_model = modelo_cargado
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "success", "message": "NÚCLEO_IA: MODELO DE COMPORTAMIENTO (TSM) DESPLEGADO."
+                    "type": "success", "message": "Modelo de análisis de comportamiento disponible."
                 })
             else:
                 behavior_model = None
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "error", "message": f"FALLO MODELO COMPORTAMIENTO -> {str(error).upper()}"
+                    "type": "error", "message": f"No se pudo cargar el modelo de comportamiento: {error}"
                 })
 
         while True:
@@ -372,18 +473,54 @@ def ejecutar_sistema_principal(shared_state):
             continue
 
         # ======================================================
-        # INFERENCIA DE ARMAS EN LOTE
+        # MOTION GATING: FILTRADO DE CÁMARAS EN REPOSO
         # ======================================================
-        weapon_results = []
-        alertas_armas_batch = [] 
+        modo_debug = shared_state.config_ram.get("cfg_debug", False)
+        ia_frames_list = []
+        ia_cam_map = {} # Mapeo de índice en ia_frames_list -> índice en frames_list
+        cams_con_movimiento = set()
 
-        if weapon_model is not None:
-            weapon_results, alertas_armas_batch = batch_detect_weapons(
-                weapon_model, frames_list, 
+        for idx, cam_upper in enumerate(cam_names_list):
+            frame = frames_list[idx]
+            frame_ts = frame_timestamps_list[idx]
+
+            # Calcular diferencia de movimiento en miniatura (160x120)
+            frame_gris = cv2.cvtColor(cv2.resize(frame, (160, 120)), cv2.COLOR_BGR2GRAY)
+            if ultimo_frame_gris.get(cam_upper) is not None:
+                diff_val = float(np.mean(cv2.absdiff(ultimo_frame_gris[cam_upper], frame_gris)))
+                if diff_val >= MOTION_DIFF_THRESHOLD:
+                    ultimo_tiempo_movimiento[cam_upper] = frame_ts
+            else:
+                ultimo_tiempo_movimiento[cam_upper] = frame_ts
+            ultimo_frame_gris[cam_upper] = frame_gris
+
+            # Histéresis: activa si hubo movimiento en los últimos MOTION_HOLD_SECONDS (2.5s)
+            # o si la cámara está en medio de una grabación de evidencia activa
+            esta_grabando = recording_state.get(cam_upper, {}).get("recording", False)
+            activo = (frame_ts - ultimo_tiempo_movimiento.get(cam_upper, 0.0)) <= MOTION_HOLD_SECONDS or esta_grabando
+
+            if activo or modo_debug:
+                cams_con_movimiento.add(cam_upper)
+                ia_cam_map[len(ia_frames_list)] = idx
+                ia_frames_list.append(frame)
+
+        # ======================================================
+        # INFERENCIA DE ARMAS EN LOTE (Solo para cámaras activas)
+        # ======================================================
+        weapon_results = [None] * len(frames_list)
+        alertas_armas_batch = [False] * len(frames_list)
+
+        if weapon_model is not None and ia_frames_list:
+            raw_w_results, raw_alertas = batch_detect_weapons(
+                weapon_model, ia_frames_list, 
                 conf=shared_state.config_ram.get("cfg_confianza_armas", 0.50), 
                 clases_alerta=config.CLASES_ARMAS_ALERTA, 
-                modo_debug=shared_state.config_ram.get("cfg_debug", False)
+                modo_debug=modo_debug
             )
+            for ia_idx, orig_idx in ia_cam_map.items():
+                if ia_idx < len(raw_w_results):
+                    weapon_results[orig_idx] = raw_w_results[ia_idx]
+                    alertas_armas_batch[orig_idx] = raw_alertas[ia_idx]
 
         # ======================================================
         # PROCESAMIENTO Y ANALÍTICA POR CÁMARA
@@ -391,14 +528,15 @@ def ejecutar_sistema_principal(shared_state):
         for i, cam_upper in enumerate(cam_names_list):
             frame = frames_list[i]
             frame_timestamp = frame_timestamps_list[i]
-            w_res = weapon_results[i] if i < len(weapon_results) else None
+            w_res = weapon_results[i]
+            tiene_movimiento_cam = cam_upper in cams_con_movimiento
 
             weapon_in_frame = False
             comportamiento_anomalo = False
             nombre_comportamiento = ""
 
             if weapon_model is not None:
-                weapon_in_frame = alertas_armas_batch[i] if i < len(alertas_armas_batch) else False
+                weapon_in_frame = alertas_armas_batch[i]
 
             # EVALUACIÓN DE VIOLENCIA TEMPORAL (TSM)
             if behavior_model is not None:
@@ -424,12 +562,13 @@ def ejecutar_sistema_principal(shared_state):
                         ultimo_error_inferencia_comportamiento[cam_upper] = tiempo_actual
                         shared_state.emitir_evento_dashboard('system_log', {
                             "type": "error",
-                            "message": f"INFERENCIA_COMPORTAMIENTO_ERROR: {str(error_inferencia).upper()}",
+                            "message": f"Falló el análisis de comportamiento: {error_inferencia}",
                         })
 
+                # Solo evaluar TSM si la cámara tiene movimiento activo
                 if (
-                    tiempo_actual - ultimo_tiempo_inferencia[cam_upper]
-                    >= INTERVALO_INFERENCIA_SEG
+                    tiene_movimiento_cam
+                    and (tiempo_actual - ultimo_tiempo_inferencia[cam_upper] >= INTERVALO_INFERENCIA_SEG)
                     and not inferencia_comportamiento_en_vuelo[cam_upper]
                 ):
                     try:
@@ -443,13 +582,11 @@ def ejecutar_sistema_principal(shared_state):
                         inferencia_comportamiento_en_vuelo[cam_upper] = True
                         ultimo_tiempo_inferencia[cam_upper] = tiempo_actual
                     except queue.Full:
-                        # El worker está ocupado con otra cámara. Se reintentará
-                        # con el frame más reciente, sin guardar trabajo atrasado.
                         pass
-
+                
                 alertas_activas = sum(historial_predicciones[cam_upper])
                 total_evaluaciones = len(historial_predicciones[cam_upper])
-                
+
                 if total_evaluaciones >= 3 and (alertas_activas / total_evaluaciones) >= 0.38:
                     ultimo_tiempo_alerta_violencia[cam_upper] = tiempo_actual
 
@@ -522,10 +659,10 @@ def ejecutar_sistema_principal(shared_state):
             if esta_grabando_actualmente:
                 # Alerta por Confirmación de Arma de Fuego
                 if alerta_arma and "ARMA" not in alertas_enviadas_evento[cam_upper]:
-                    print(f"\n[SISTEMA IA] ¡ALERTA CONFIRMADA! Presencia de arma sostenida en {cam_upper}.")
+                    print(f"\n[ALERTA] Presencia de arma confirmada en {cam_upper}.")
                     shared_state.emitir_evento_dashboard('system_log', {
                         "type": "error",
-                        "message": f"ALERTA CRÍTICA: Arma de fuego confirmada en {cam_upper}"
+                        "message": f"Alerta de seguridad: arma de fuego confirmada en {cam_upper}."
                     })
                     threading.Thread(
                         target=_ejecutar_alerta_segura,
@@ -536,10 +673,10 @@ def ejecutar_sistema_principal(shared_state):
 
                 # Alerta por Comportamiento Hostil
                 if comportamiento_anomalo and nombre_comportamiento not in alertas_enviadas_evento[cam_upper]:
-                    print(f"\n[SISTEMA IA] ¡ALERTA CONFIRMADA! Conducta hostil sostenida en {cam_upper}.")
+                    print(f"\n[ALERTA] Conducta hostil confirmada en {cam_upper}.")
                     shared_state.emitir_evento_dashboard('system_log', {
                         "type": "error",
-                        "message": f"ALERTA CRÍTICA: Comportamiento hostil confirmado en {cam_upper}"
+                        "message": f"Alerta de seguridad: comportamiento hostil confirmado en {cam_upper}."
                     })
                     threading.Thread(
                         target=_ejecutar_alerta_segura,

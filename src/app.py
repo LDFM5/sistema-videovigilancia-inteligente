@@ -1,8 +1,7 @@
 """
 app.py
 
-Servidor de control de operaciones de Edge AI y gateway de telemetría asíncrona.
-Estructura de alto rendimiento basada en Server-Sent Events (SSE) para entornos industriales.
+Servidor web de control y distribución de eventos mediante Server-Sent Events (SSE).
 """
 
 import threading
@@ -37,17 +36,16 @@ class EstadoSistema:
         
         # Lista compartida de suscriptores web activos
         self.suscriptores_activos = []
-        # Búfer circular volátil para almacenar los últimos 200 eventos
+        # Búfer circular con los últimos 200 eventos.
         self.historial_eventos = deque(maxlen=200)
 
     def emitir_evento_dashboard(self, event_type, data):
         """
-        Método de instancia único: Propaga un evento estructurado simultáneamente 
-        a todas las conexiones web activas.
+        Propaga un evento estructurado a todas las conexiones web activas.
         """
         with self.lock:
             if event_type == 'system_log':
-                log_msg = data.get("message", "").upper()
+                log_msg = data.get("message", "")
                 t_type = data.get("type", "info").upper()
                 print(f"[{t_type}] {log_msg}")
                 sys.stdout.flush()
@@ -57,10 +55,10 @@ class EstadoSistema:
                 "contenido": data
             }
 
-            # Guardar en el búfer de persistencia en caliente
+            # Guardar el evento en el historial reciente.
             self.historial_eventos.append(paquete_estructurado)
 
-            # Tomar una foto instantánea de la lista de suscriptores para minimizar tiempo de lock
+            # Copiar la lista de suscriptores antes de liberar el bloqueo.
             suscriptores = list(self.suscriptores_activos)
 
         # Despacho fuera del lock principal
@@ -73,7 +71,7 @@ class EstadoSistema:
                 pass
 
 
-# Instancia única soberana del estado del sistema
+# Instancia compartida del estado del sistema.
 estado = EstadoSistema()
 
 
@@ -94,7 +92,7 @@ def index():
 def update_config():
     """
     Actualiza los parámetros del sistema en caliente dentro de la memoria RAM
-    aplicando casteo estricto por tipo de dato.
+    convirtiendo cada valor al tipo de dato esperado.
     """
     data = request.json
     with estado.lock:
@@ -112,7 +110,7 @@ def update_config():
                     
     estado.emitir_evento_dashboard('system_log', {
         "type": "info", 
-        "message": f"CONTROL_PANEL: VARIABLE_RAM_MODIFICADA -> DATOS: {list(data.keys())}"
+        "message": f"Configuración actualizada: {', '.join(data.keys())}."
     })
     return jsonify({"status": "SUCCESS", "code": 200})
 
@@ -131,7 +129,7 @@ def save_config():
         
         estado.emitir_evento_dashboard('system_log', {
             "type": "success", 
-            "message": "CONTROL_PANEL: CONFIGURACIÓN GUARDADA DE FORMA PERMANENTE EN EL DISCO."
+            "message": "La configuración se guardó correctamente."
         })
         return jsonify({"status": "SUCCESS", "code": 200})
         
@@ -139,7 +137,7 @@ def save_config():
         try:
             estado.emitir_evento_dashboard('system_log', {
                 "type": "error", 
-                "message": f"CONTROL_PANEL_ERROR: NO SE PUDO REESCRIBIR EL ARCHIVO JSON -> {str(e).upper()}"
+                "message": f"No se pudo guardar la configuración: {e}"
             })
         except Exception:
             pass
@@ -165,7 +163,7 @@ def restore_defaults():
                 
         estado.emitir_evento_dashboard('system_log', {
             "type": "warn", 
-            "message": "CONTROL_PANEL: VALORES DE FÁBRICA RESTABLECIDOS. COMPRUEBE LA INTERFAZ."
+            "message": "Se restablecieron los valores predeterminados."
         })
         return jsonify({"status": "SUCCESS", "data": valores_defecto, "code": 200})
         
@@ -173,13 +171,99 @@ def restore_defaults():
         try:
             estado.emitir_evento_dashboard('system_log', {
                 "type": "error", 
-                "message": f"CONTROL_PANEL_ERROR: FALLO AL RESTABLECER VALORES -> {str(e).upper()}"
+                "message": f"No se pudieron restablecer los valores predeterminados: {e}"
             })
         except Exception:
             pass
         return jsonify({"status": "ERROR", "code": 500})
 
-        
+
+# ==========================================
+# ENDPOINTS REST: GESTIÓN DINÁMICA DE CÁMARAS
+# ==========================================
+@app.route('/api/cameras', methods=['GET'])
+def get_cameras():
+    """Retorna la lista de cámaras configuradas."""
+    cams = config.obtener_camaras_configuradas()
+    return jsonify({"status": "SUCCESS", "cameras": cams, "code": 200})
+
+
+@app.route('/api/cameras', methods=['POST'])
+def add_or_update_camera():
+    """Agrega o actualiza una cámara (USB por índice o IP por URL RTSP)."""
+    data = request.json or {}
+    cam_name = str(data.get("name", "")).strip().lower()
+    source_val = str(data.get("source", "")).strip()
+
+    if not cam_name or not source_val:
+        return jsonify({"status": "ERROR", "message": "El nombre y la fuente son obligatorios.", "code": 400})
+
+    try:
+        source = int(source_val) if source_val.isdigit() else source_val
+    except Exception:
+        source = source_val
+
+    cfg = config.cargar_configuracion_inicial()
+    if "camaras" not in cfg:
+        cfg["camaras"] = {}
+    cfg["camaras"][cam_name] = source
+    config.guardar_configuracion_disco(cfg)
+
+    estado.emitir_evento_dashboard('system_log', {
+        "type": "success",
+        "message": f"Cámara '{cam_name}' guardada ({source})."
+    })
+@app.route('/api/cameras/<cam_name>', methods=['DELETE'])
+def delete_camera(cam_name):
+    """Elimina una cámara de la configuración."""
+    cam_name = str(cam_name).strip().lower()
+    cfg = config.cargar_configuracion_inicial()
+    if "camaras" in cfg and cam_name in cfg["camaras"]:
+        del cfg["camaras"][cam_name]
+        config.guardar_configuracion_disco(cfg)
+        estado.emitir_evento_dashboard('system_log', {
+            "type": "warn",
+            "message": f"Cámara '{cam_name}' eliminada de la configuración."
+        })
+        return jsonify({"status": "SUCCESS", "cameras": cfg["camaras"], "code": 200})
+    return jsonify({"status": "ERROR", "message": "Cámara no encontrada.", "code": 404})
+
+
+@app.route('/api/scan_cameras', methods=['GET'])
+def scan_cameras():
+    """Escanea cámaras locales USB y genera miniaturas para previsualización."""
+    from cameras import escanear_camaras_locales
+    try:
+        cams = escanear_camaras_locales()
+        return jsonify({"status": "SUCCESS", "cameras": cams, "code": 200})
+    except Exception as e:
+        return jsonify({"status": "ERROR", "message": str(e), "code": 500})
+
+
+@app.route('/api/test_camera', methods=['POST'])
+def test_camera():
+    """Prueba si una fuente USB, RTSP o archivo entrega video."""
+    from cameras import probar_fuente_camara
+    data = request.json or {}
+    source = data.get("source", "")
+    if source is None or str(source).strip() == "":
+        return jsonify({"status": "ERROR", "message": "Debes especificar una fuente.", "code": 400})
+
+    resultado = probar_fuente_camara(source)
+    return jsonify(resultado)
+
+
+@app.route('/api/scan_network_rtsp', methods=['GET'])
+def scan_network_rtsp():
+    """Escanea la subred en busca de dispositivos con puerto RTSP 554 abierto."""
+    from cameras import escanear_camaras_red_rtsp
+    try:
+        res = escanear_camaras_red_rtsp()
+        return jsonify({"status": "SUCCESS", "data": res, "code": 200})
+    except Exception as e:
+        return jsonify({"status": "ERROR", "message": str(e), "code": 500})
+
+
 @app.route('/get_initial_state', methods=['GET'])
 def get_initial_state():
     """
@@ -232,8 +316,8 @@ def stream_dashboard():
 
 
 def cerrar_servidor(_sig, _frame):
-    print("\nSYS_CORE: INTERRUPCIÓN DE TERMINAL DETECTADA. SIGINT RECIBIDO.")
-    print("SYS_CORE: DETENIENDO MOTOR DE INFERENCIA E INTERFACES FLASK KERNEL...")
+    print("\n[INFO] Se recibió una solicitud de cierre.")
+    print("[INFO] Deteniendo el motor de inferencia y el servidor web.")
     sys.stdout.flush()
     raise KeyboardInterrupt
 
@@ -249,8 +333,8 @@ if __name__ == "__main__":
     )
     t.start()
 
-    print("HTTP_GATEWAY: INTERFAZ DEL SERVIDOR DE CONTROL DESPLEGADA.")
-    print("HTTP_GATEWAY: NODO DE CÓMPUTO OPERATIVO EN -> http://localhost:5000")
+    print("[INFO] Servidor de control iniciado.")
+    print("[INFO] Interfaz disponible en http://localhost:5000.")
     sys.stdout.flush()
 
     app.run(
