@@ -64,11 +64,17 @@ def update_window(
         False -> Si la alerta ya estaba activa o no alcanza el umbral.
     """
     cam_upper = cam_name.upper()
+    if cam_upper not in detection_windows or not isinstance(detection_windows[cam_upper], dict) or "events" not in detection_windows[cam_upper]:
+        detection_windows[cam_upper] = {
+            "events": deque(),
+            "window_seconds": 1.5,
+            "nominal_fps": 30.0,
+        }
     window_state = detection_windows[cam_upper]
     events = window_state["events"]
     now = time.monotonic() if timestamp is None else float(timestamp)
-    window_seconds = window_state["window_seconds"]
-    nominal_fps = window_state["nominal_fps"]
+    window_seconds = window_state.get("window_seconds", 1.5)
+    nominal_fps = window_state.get("nominal_fps", 30.0)
 
     # Una pausa mayor que la propia ventana indica discontinuidad de cámara;
     # no se debe considerar que la última detección persistió durante la caída.

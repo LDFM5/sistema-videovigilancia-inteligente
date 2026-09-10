@@ -352,7 +352,7 @@ def _escribir_hasta_timestamp(writer, state, timestamp):
 
 def _crear_video_writer(filepath, width, height):
     """Abre el archivo en el worker con fallback de codec compatible."""
-    for codec in ("avc1", "mp4v"):
+    for codec in ("mp4v", "avc1"):
         writer = cv2.VideoWriter(
             filepath,
             cv2.VideoWriter_fourcc(*codec),

@@ -205,6 +205,12 @@ class RTSPStreamer:
         if not self.running:
             return False
 
+        # Si falla 2 o más veces con NVENC, conmutar de inmediato a CPU (libx264)
+        if self.restart_failures >= 2 and self.usar_nvenc:
+            print(f"[WARN] Conmutando streamer de {self.cam_name} a libx264 por fallo en encoder hardware.")
+            self.usar_nvenc = False
+            self.command = self._construir_comando_ffmpeg(False)
+
         try:
             self._start_ffmpeg()
             if self.shared_state:

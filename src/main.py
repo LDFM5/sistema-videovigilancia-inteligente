@@ -90,12 +90,9 @@ def ejecutar_sistema_principal(shared_state):
     # ======================================================
     # 2. DISPOSITIVOS Y BÚFERES POR CANAL (CLAVES NORMALIZADAS)
     # ======================================================
-    cameras, camera_resolutions_raw, camera_fps_raw = initialize_cameras()
+    cameras, camera_resolutions_raw, camera_fps_raw = initialize_cameras(shared_state=shared_state)
     
     # Normalizar las claves de cámara en mayúsculas para mantener la misma convención.
-    camera_resolutions = {k.upper(): v for k, v in camera_resolutions_raw.items()}
-    camera_fps = {k.upper(): v for k, v in camera_fps_raw.items()}
-
     camera_resolutions = {k.upper(): v for k, v in camera_resolutions_raw.items()}
     camera_fps = {k.upper(): v for k, v in camera_fps_raw.items()}
 
@@ -165,21 +162,13 @@ def ejecutar_sistema_principal(shared_state):
     ).start()
 
     # Temporizador para inferencia TSM (cada 200 ms) y longitud del buffer temporal
-    HISTORIAL_COMPORTAMIENTO_SEG = 3.0
+    HISTORIAL_COMPORTAMIENTO_SEG = 1.5
     ultimo_tiempo_inferencia = {cam_name.upper(): 0.0 for cam_name in cameras}
     INTERVALO_INFERENCIA_SEG = 0.20
 
     # Retención de alerta (Hysteresis de 2.5s)
     ultimo_tiempo_alerta_violencia = {cam_name.upper(): 0.0 for cam_name in cameras}
     TIEMPO_RETENCION_ALERTA_SEG = 2.5
-
-    # ======================================================
-    # MOTION GATING (FILTRO DE MOVIMIENTO CON HISTÉRESIS)
-    # ======================================================
-    MOTION_DIFF_THRESHOLD = 0.45   # Sensible a movimientos corporales ligeros
-    MOTION_HOLD_SECONDS = 2.50     # Histéresis: mantener activa la IA 2.5s tras el último movimiento
-    ultimo_frame_gris = {cam_name.upper(): None for cam_name in cameras}
-    ultimo_tiempo_movimiento = {cam_name.upper(): time.monotonic() for cam_name in cameras}
 
     # Ventanas temporales inicializadas con claves en MAYÚSCULAS
     windows_armas = initialize_windows(camera_fps, config.WINDOW_SECONDS)
@@ -242,8 +231,7 @@ def ejecutar_sistema_principal(shared_state):
                     c_upper = c_name.upper()
                     if c_name not in cameras:
                         print(f"[INFO] Agregando nueva cámara al sistema en caliente: {c_name} -> {c_source}")
-                        cap = CameraStream(c_name, c_source)
-                        cap.shared_state = shared_state
+                        cap = CameraStream(c_name, c_source, shared_state=shared_state)
                         cameras[c_name] = cap
                         camera_resolutions[c_upper] = (cap.width, cap.height)
                         camera_fps[c_upper] = cap.fps
@@ -261,9 +249,13 @@ def ejecutar_sistema_principal(shared_state):
                         ultimo_frame_procesado[c_upper] = None
                         inferencia_comportamiento_en_vuelo[c_upper] = False
                         ultimo_error_inferencia_comportamiento[c_upper] = 0.0
-                        ultimo_frame_gris[c_upper] = None
-                        ultimo_tiempo_movimiento[c_upper] = time.monotonic()
-                        windows_armas[c_upper] = deque(maxlen=int(cap.fps * config.WINDOW_SECONDS))
+                        ultimo_tiempo_inferencia[c_upper] = 0.0
+                        ultimo_tiempo_alerta_violencia[c_upper] = 0.0
+                        windows_armas[c_upper] = {
+                            "events": deque(),
+                            "window_seconds": max(0.1, float(config.WINDOW_SECONDS)),
+                            "nominal_fps": max(1.0, float(cap.fps)),
+                        }
                         alert_state_armas[c_upper] = False
                         alertas_enviadas_evento[c_upper] = set()
                         recording_state[c_upper] = inicializar_camara_grabacion(c_upper, config.PRE_BUFFER_SECONDS)
@@ -295,8 +287,8 @@ def ejecutar_sistema_principal(shared_state):
                     ultimo_frame_procesado.pop(c_upper, None)
                     inferencia_comportamiento_en_vuelo.pop(c_upper, None)
                     ultimo_error_inferencia_comportamiento.pop(c_upper, None)
-                    ultimo_frame_gris.pop(c_upper, None)
-                    ultimo_tiempo_movimiento.pop(c_upper, None)
+                    ultimo_tiempo_inferencia.pop(c_upper, None)
+                    ultimo_tiempo_alerta_violencia.pop(c_upper, None)
                     windows_armas.pop(c_upper, None)
                     alert_state_armas.pop(c_upper, None)
                     alertas_enviadas_evento.pop(c_upper, None)
@@ -340,6 +332,7 @@ def ejecutar_sistema_principal(shared_state):
                 frames_list.append(frame)
                 cam_names_list.append(cam_upper)
                 frame_timestamps_list.append(frame_timestamp)
+                camera_resolutions[cam_upper] = (frame.shape[1], frame.shape[0])
 
                 if comportamiento_habilitado:
                     frame_small = cv2.resize(
@@ -473,54 +466,21 @@ def ejecutar_sistema_principal(shared_state):
             continue
 
         # ======================================================
-        # MOTION GATING: FILTRADO DE CÁMARAS EN REPOSO
+        # INFERENCIA DE ARMAS EN LOTE (Todas las cámaras continuas)
         # ======================================================
         modo_debug = shared_state.config_ram.get("cfg_debug", False)
-        ia_frames_list = []
-        ia_cam_map = {} # Mapeo de índice en ia_frames_list -> índice en frames_list
-        cams_con_movimiento = set()
-
-        for idx, cam_upper in enumerate(cam_names_list):
-            frame = frames_list[idx]
-            frame_ts = frame_timestamps_list[idx]
-
-            # Calcular diferencia de movimiento en miniatura (160x120)
-            frame_gris = cv2.cvtColor(cv2.resize(frame, (160, 120)), cv2.COLOR_BGR2GRAY)
-            if ultimo_frame_gris.get(cam_upper) is not None:
-                diff_val = float(np.mean(cv2.absdiff(ultimo_frame_gris[cam_upper], frame_gris)))
-                if diff_val >= MOTION_DIFF_THRESHOLD:
-                    ultimo_tiempo_movimiento[cam_upper] = frame_ts
-            else:
-                ultimo_tiempo_movimiento[cam_upper] = frame_ts
-            ultimo_frame_gris[cam_upper] = frame_gris
-
-            # Histéresis: activa si hubo movimiento en los últimos MOTION_HOLD_SECONDS (2.5s)
-            # o si la cámara está en medio de una grabación de evidencia activa
-            esta_grabando = recording_state.get(cam_upper, {}).get("recording", False)
-            activo = (frame_ts - ultimo_tiempo_movimiento.get(cam_upper, 0.0)) <= MOTION_HOLD_SECONDS or esta_grabando
-
-            if activo or modo_debug:
-                cams_con_movimiento.add(cam_upper)
-                ia_cam_map[len(ia_frames_list)] = idx
-                ia_frames_list.append(frame)
-
-        # ======================================================
-        # INFERENCIA DE ARMAS EN LOTE (Solo para cámaras activas)
-        # ======================================================
         weapon_results = [None] * len(frames_list)
         alertas_armas_batch = [False] * len(frames_list)
 
-        if weapon_model is not None and ia_frames_list:
+        if weapon_model is not None and frames_list:
             raw_w_results, raw_alertas = batch_detect_weapons(
-                weapon_model, ia_frames_list, 
+                weapon_model, frames_list, 
                 conf=shared_state.config_ram.get("cfg_confianza_armas", 0.50), 
                 clases_alerta=config.CLASES_ARMAS_ALERTA, 
                 modo_debug=modo_debug
             )
-            for ia_idx, orig_idx in ia_cam_map.items():
-                if ia_idx < len(raw_w_results):
-                    weapon_results[orig_idx] = raw_w_results[ia_idx]
-                    alertas_armas_batch[orig_idx] = raw_alertas[ia_idx]
+            weapon_results = raw_w_results
+            alertas_armas_batch = raw_alertas
 
         # ======================================================
         # PROCESAMIENTO Y ANALÍTICA POR CÁMARA
@@ -529,7 +489,6 @@ def ejecutar_sistema_principal(shared_state):
             frame = frames_list[i]
             frame_timestamp = frame_timestamps_list[i]
             w_res = weapon_results[i]
-            tiene_movimiento_cam = cam_upper in cams_con_movimiento
 
             weapon_in_frame = False
             comportamiento_anomalo = False
@@ -556,7 +515,7 @@ def ejecutar_sistema_principal(shared_state):
                         )
                     elif (
                         tiempo_actual
-                        - ultimo_error_inferencia_comportamiento[cam_upper]
+                        - ultimo_error_inferencia_comportamiento.get(cam_upper, 0.0)
                         >= 10.0
                     ):
                         ultimo_error_inferencia_comportamiento[cam_upper] = tiempo_actual
@@ -565,11 +524,10 @@ def ejecutar_sistema_principal(shared_state):
                             "message": f"Falló el análisis de comportamiento: {error_inferencia}",
                         })
 
-                # Solo evaluar TSM si la cámara tiene movimiento activo
+                # Evaluar TSM según el intervalo temporal configurado
                 if (
-                    tiene_movimiento_cam
-                    and (tiempo_actual - ultimo_tiempo_inferencia[cam_upper] >= INTERVALO_INFERENCIA_SEG)
-                    and not inferencia_comportamiento_en_vuelo[cam_upper]
+                    (tiempo_actual - ultimo_tiempo_inferencia.get(cam_upper, 0.0) >= INTERVALO_INFERENCIA_SEG)
+                    and not inferencia_comportamiento_en_vuelo.get(cam_upper, False)
                 ):
                     try:
                         cola_inferencia_comportamiento.put_nowait((
@@ -587,10 +545,11 @@ def ejecutar_sistema_principal(shared_state):
                 alertas_activas = sum(historial_predicciones[cam_upper])
                 total_evaluaciones = len(historial_predicciones[cam_upper])
 
-                if total_evaluaciones >= 3 and (alertas_activas / total_evaluaciones) >= 0.38:
+                # Requiere confirmación temporal: al menos 2 detecciones positivas consecutivas/cercanas
+                if total_evaluaciones >= 2 and alertas_activas >= 2 and (alertas_activas / total_evaluaciones) >= 0.30:
                     ultimo_tiempo_alerta_violencia[cam_upper] = tiempo_actual
 
-                if (tiempo_actual - ultimo_tiempo_alerta_violencia[cam_upper]) < TIEMPO_RETENCION_ALERTA_SEG:
+                if (tiempo_actual - ultimo_tiempo_alerta_violencia.get(cam_upper, 0.0)) < TIEMPO_RETENCION_ALERTA_SEG:
                     comportamiento_anomalo = True
                     nombre_comportamiento = "VIOLENCIA"
 
@@ -689,11 +648,13 @@ def ejecutar_sistema_principal(shared_state):
                 alertas_enviadas_evento[cam_upper].clear()
 
             # TRANSMISIÓN RTSP
-            streamers[cam_upper].enviar_frame(frame)
+            if cam_upper in streamers:
+                streamers[cam_upper].enviar_frame(frame)
             
             # ESTADO GLOBAL
             cam_key_lower = cam_upper.lower()
-            if hasattr(cameras.get(cam_key_lower), 'estado_error_enviado') and cameras[cam_key_lower].estado_error_enviado:
+            cam_obj = cameras.get(cam_key_lower)
+            if cam_obj and getattr(cam_obj, 'estado_error_enviado', False):
                 _registro_estados_global[cam_key_lower] = "error"
             elif esta_grabando_actualmente:
                 _registro_estados_global[cam_key_lower] = "detecting"

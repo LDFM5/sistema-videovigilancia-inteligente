@@ -80,7 +80,7 @@ estado = EstadoSistema()
 # ==========================================
 @app.route('/')
 def index():
-    nombres_camaras = list(config.CAMERA_INDEXES.keys())
+    nombres_camaras = list(config.obtener_camaras_configuradas().keys())
     return render_template(
         'index.html',
         camaras=nombres_camaras,
@@ -124,6 +124,9 @@ def save_config():
         with estado.lock:
             datos_a_guardar = dict(estado.config_ram)
             
+        cfg_actual = config.cargar_configuracion_inicial()
+        datos_a_guardar["camaras"] = cfg_actual.get("camaras", config.CAMERA_INDEXES)
+
         # Escribir en el disco en una operación atómica
         config.guardar_configuracion_disco(datos_a_guardar)
         
@@ -190,29 +193,92 @@ def get_cameras():
 
 @app.route('/api/cameras', methods=['POST'])
 def add_or_update_camera():
-    """Agrega o actualiza una cámara (USB por índice o IP por URL RTSP)."""
+    """Agrega o actualiza una cámara tras validar previamente que entrega fotogramas reales."""
+    import unicodedata
+    import re
+    from cameras import probar_fuente_camara, normalizar_fuente
+
     data = request.json or {}
-    cam_name = str(data.get("name", "")).strip().lower()
+    raw_name = str(data.get("name", "")).strip()
     source_val = str(data.get("source", "")).strip()
 
-    if not cam_name or not source_val:
-        return jsonify({"status": "ERROR", "message": "El nombre y la fuente son obligatorios.", "code": 400})
+    if not raw_name or not source_val:
+        return jsonify({
+            "status": "ERROR", 
+            "message": "El nombre y la fuente son obligatorios.", 
+            "code": 400
+        }), 400
 
-    try:
-        source = int(source_val) if source_val.isdigit() else source_val
-    except Exception:
-        source = source_val
+    # 1. Sanitizar el nombre (slug limpio sin acentos ni espacios)
+    clean_name = unicodedata.normalize('NFKD', raw_name).encode('ASCII', 'ignore').decode('utf-8')
+    clean_name = re.sub(r'[^a-zA-Z0-9]+', '_', clean_name).strip('_').lower()
+
+    if not clean_name:
+        return jsonify({
+            "status": "ERROR",
+            "message": "El nombre de la cámara no es válido. Debe contener al menos una letra o número.",
+            "code": 400
+        }), 400
+
+    if len(clean_name) < 2:
+        return jsonify({
+            "status": "ERROR",
+            "message": "El nombre debe tener al menos 2 caracteres.",
+            "code": 400
+        }), 400
+
+    # 2. Normalizar y parsear fuente (entero para USB, URL para RTSP, ruta para archivo local)
+    source = normalizar_fuente(source_val)
 
     cfg = config.cargar_configuracion_inicial()
     if "camaras" not in cfg:
         cfg["camaras"] = {}
-    cfg["camaras"][cam_name] = source
+
+    # 3. Comprobar colisión de índice USB físico duplicado
+    if isinstance(source, int):
+        for existing_name, existing_source in cfg["camaras"].items():
+            if existing_name != clean_name and existing_source == source:
+                return jsonify({
+                    "status": "ERROR",
+                    "message": f"El índice USB {source} ya está siendo utilizado por la cámara '{existing_name}'. Cada cámara USB requiere un puerto/índice físico independiente.",
+                    "code": 400
+                }), 400
+
+    # 4. Validación activa: Comprobar que la fuente es real y entrega video
+    resultado_prueba = probar_fuente_camara(source)
+    if resultado_prueba.get("status") != "SUCCESS":
+        err_msg = resultado_prueba.get("message", "No se pudo conectar o la fuente no entrega fotogramas.")
+        return jsonify({
+            "status": "ERROR",
+            "message": f"No se pudo verificar la fuente ({source}): {err_msg}. No se agregó ninguna cámara para proteger el rendimiento del sistema.",
+            "code": 400
+        }), 400
+
+    # 5. Fuente válida: Guardar permanentemente en configuración
+    cfg["camaras"][clean_name] = source
     config.guardar_configuracion_disco(cfg)
+
+    resolucion = resultado_prueba.get("resolution", "N/A")
+    fps = resultado_prueba.get("fps", "N/A")
 
     estado.emitir_evento_dashboard('system_log', {
         "type": "success",
-        "message": f"Cámara '{cam_name}' guardada ({source})."
+        "message": f"Cámara '{clean_name}' validada y guardada ({source} - {resolucion} @ {fps} FPS)."
     })
+    return jsonify({
+        "status": "SUCCESS",
+        "message": f"Cámara '{clean_name}' validada y guardada exitosamente ({source} - {resolucion} @ {fps} FPS).",
+        "cameras": cfg["camaras"],
+        "camera_info": {
+            "name": clean_name,
+            "source": source,
+            "resolution": resolucion,
+            "fps": fps
+        },
+        "code": 200
+    })
+
+
 @app.route('/api/cameras/<cam_name>', methods=['DELETE'])
 def delete_camera(cam_name):
     """Elimina una cámara de la configuración."""
@@ -289,8 +355,11 @@ def stream_dashboard():
     cola_cliente = queue.Queue(maxsize=2000)
     
     with estado.lock:
+        # Reenviar únicamente alertas críticas previas para mantener la persistencia visual
+        # sin saturar la consola con logs transitorios o reconexiones pasadas.
         for evento_pasado in estado.historial_eventos:
-            cola_cliente.put_nowait(evento_pasado)
+            if evento_pasado.get("tipo_evento") == "critical_alert":
+                cola_cliente.put_nowait(evento_pasado)
             
         estado.suscriptores_activos.append(cola_cliente)
 

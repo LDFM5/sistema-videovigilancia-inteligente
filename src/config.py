@@ -162,6 +162,11 @@ def guardar_configuracion_disco(nuevos_valores):
     Aplica una escritura atómica en disco para prevenir la corrupción del archivo JSON
     y actualiza en caliente los atributos globales del módulo config.
     """
+    # Preservar la sección de cámaras si no viene en los nuevos valores recibidos
+    if "camaras" not in nuevos_valores:
+        cfg_actual = cargar_configuracion_inicial()
+        nuevos_valores["camaras"] = cfg_actual.get("camaras", VALORES_FABRICA["camaras"])
+
     temp_path = RUTA_JSON_CONFIG + ".tmp"
     
     # 1. Escribir los datos en un archivo temporal.
@@ -177,7 +182,7 @@ def guardar_configuracion_disco(nuevos_valores):
     setattr(modulo, "ACTIVAR_MODELO_COMPORTAMIENTO", bool(nuevos_valores.get("cfg_comportamiento", False)))
     
     setattr(modulo, "CONF_WEAPON", float(nuevos_valores.get("cfg_confianza_armas", 0.50)))
-    setattr(modulo, "CONF_BEHAVIOR", float(nuevos_valores.get("cfg_confianza_comportamiento", 0.50)))
+    setattr(modulo, "CONF_BEHAVIOR", float(nuevos_valores.get("cfg_confianza_comportamiento", 0.65)))
     
     setattr(modulo, "PRE_BUFFER_SECONDS", int(nuevos_valores.get("cfg_prebuffer", 10)))
     setattr(modulo, "POST_BUFFER_SECONDS", int(nuevos_valores.get("cfg_postbuffer", 15)))
