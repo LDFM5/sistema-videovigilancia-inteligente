@@ -4,6 +4,7 @@ app.py
 Servidor web de control y distribución de eventos mediante Server-Sent Events (SSE).
 """
 
+import os
 import threading
 import signal
 import queue
@@ -31,7 +32,9 @@ class EstadoSistema:
             "cfg_confianza_comportamiento": config.CONF_BEHAVIOR,
             "cfg_prebuffer": config.PRE_BUFFER_SECONDS,
             "cfg_postbuffer": config.POST_BUFFER_SECONDS,
-            "cfg_debug": config.MODO_DEBUG
+            "cfg_debug": config.MODO_DEBUG,
+            "cfg_modelo_armas": getattr(config, "MODELO_ARMAS_NOMBRE", config.WEAPON_DEFAULT_MODEL),
+            "cfg_modelo_comportamiento": getattr(config, "MODELO_COMPORTAMIENTO_NOMBRE", config.BEHAVIOR_DEFAULT_MODEL)
         }
         
         # Lista compartida de suscriptores web activos
@@ -94,17 +97,20 @@ def update_config():
     Actualiza los parámetros del sistema en caliente dentro de la memoria RAM
     convirtiendo cada valor al tipo de dato esperado.
     """
-    data = request.json
+    data = request.json or {}
     with estado.lock:
         for key in data:
             if key in estado.config_ram:
                 # 1. Banderas de control (Booleanas)
                 if key in ["cfg_armas", "cfg_comportamiento", "cfg_debug"]:
                     estado.config_ram[key] = bool(data[key])
-                # 2. Duración de búferes de grabación (Enteros)
+                # 2. Modelos seleccionados (Strings)
+                elif key in ["cfg_modelo_armas", "cfg_modelo_comportamiento"]:
+                    estado.config_ram[key] = str(data[key]).strip()
+                # 3. Duración de búferes de grabación (Enteros)
                 elif key in ["cfg_prebuffer", "cfg_postbuffer"]:
                     estado.config_ram[key] = int(float(data[key]))
-                # 3. Umbrales de confianza para modelos (Flotantes)
+                # 4. Umbrales de confianza para modelos (Flotantes)
                 else:
                     estado.config_ram[key] = float(data[key])
                     
@@ -163,6 +169,8 @@ def restore_defaults():
             estado.config_ram["cfg_prebuffer"] = valores_defecto["cfg_prebuffer"]
             estado.config_ram["cfg_postbuffer"] = valores_defecto["cfg_postbuffer"]
             estado.config_ram["cfg_debug"] = valores_defecto["cfg_debug"]
+            estado.config_ram["cfg_modelo_armas"] = valores_defecto.get("cfg_modelo_armas", config.WEAPON_DEFAULT_MODEL)
+            estado.config_ram["cfg_modelo_comportamiento"] = valores_defecto.get("cfg_modelo_comportamiento", config.BEHAVIOR_DEFAULT_MODEL)
                 
         estado.emitir_evento_dashboard('system_log', {
             "type": "warn", 
@@ -179,6 +187,202 @@ def restore_defaults():
         except Exception:
             pass
         return jsonify({"status": "ERROR", "code": 500})
+
+
+@app.route('/api/available_models', methods=['GET'])
+def get_available_models():
+    """Retorna los modelos configurados actualmente."""
+    with estado.lock:
+        cur_w = estado.config_ram.get("cfg_modelo_armas", config.WEAPON_DEFAULT_MODEL)
+        cur_b = estado.config_ram.get("cfg_modelo_comportamiento", config.BEHAVIOR_DEFAULT_MODEL)
+
+    return jsonify({
+        "status": "SUCCESS",
+        "current_weapon_model": cur_w,
+        "current_behavior_model": cur_b,
+        "code": 200
+    })
+
+
+@app.route('/api/fs/list', methods=['GET'])
+def list_filesystem():
+    """
+    Permite navegar libremente por el sistema de archivos del equipo
+    para que el usuario seleccione cualquier modelo donde sea que esté ubicado.
+    """
+    req_path = request.args.get('path', '').strip()
+    tipo = request.args.get('tipo', 'all').strip().lower()
+    mostrar_todos = request.args.get('all_files', '0').strip() in ('1', 'true', 'True')
+    
+    if not req_path:
+        with estado.lock:
+            if tipo == 'armas':
+                cur = estado.config_ram.get("cfg_modelo_armas", config.WEAPON_DEFAULT_MODEL)
+            else:
+                cur = estado.config_ram.get("cfg_modelo_comportamiento", config.BEHAVIOR_DEFAULT_MODEL)
+        resolved = config.resolver_ruta_modelo(cur, tipo)
+        if os.path.exists(resolved):
+            req_path = os.path.dirname(resolved) if os.path.isfile(resolved) else resolved
+        else:
+            req_path = config.MODELS_DIR
+
+    req_path = os.path.normpath(os.path.abspath(req_path))
+    if not os.path.exists(req_path):
+        req_path = config.BASE_DIR
+    if not os.path.isdir(req_path):
+        req_path = os.path.dirname(req_path)
+
+    drives = []
+    if os.name == 'nt':
+        import string
+        for letter in string.ascii_uppercase:
+            drv = f"{letter}:\\"
+            if os.path.exists(drv):
+                drives.append(os.path.normpath(drv).replace("\\", "/"))
+
+    quick_paths = [
+        {"label": "models", "path": os.path.normpath(config.MODELS_DIR).replace("\\", "/")},
+        {"label": "Proyecto", "path": os.path.normpath(config.BASE_DIR).replace("\\", "/")},
+    ]
+    comp_dir = os.path.join(config.BASE_DIR, "Comportamiento")
+    if os.path.exists(comp_dir):
+        quick_paths.append({"label": "Comportamiento", "path": os.path.normpath(comp_dir).replace("\\", "/")})
+        
+    user_home = os.path.expanduser("~")
+    downloads = os.path.join(user_home, "Downloads")
+    if os.path.exists(downloads):
+        quick_paths.append({"label": "Descargas", "path": os.path.normpath(downloads).replace("\\", "/")})
+        
+    desktop = os.path.join(user_home, "Desktop")
+    if os.path.exists(desktop):
+        quick_paths.append({"label": "Escritorio", "path": os.path.normpath(desktop).replace("\\", "/")})
+
+    if tipo == 'armas':
+        valid_exts = ('.pt', '.engine', '.onnx')
+    elif tipo == 'comportamiento':
+        valid_exts = ('.pth',)
+    else:
+        valid_exts = ('.pt', '.engine', '.onnx', '.pth')
+
+    folders = []
+    files = []
+    parent_path = os.path.dirname(req_path) if os.path.dirname(req_path) != req_path else None
+
+    try:
+        with os.scandir(req_path) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if not entry.name.startswith('$') and not entry.name.startswith('.'):
+                            folders.append({
+                                "name": entry.name,
+                                "path": os.path.normpath(entry.path).replace("\\", "/")
+                            })
+                    elif entry.is_file(follow_symlinks=False):
+                        low = entry.name.lower()
+                        es_compatible = any(low.endswith(ext) for ext in valid_exts)
+                        if es_compatible or mostrar_todos:
+                            stat = entry.stat()
+                            files.append({
+                                "name": entry.name,
+                                "path": os.path.normpath(entry.path).replace("\\", "/"),
+                                "compatible": es_compatible,
+                                "size_mb": round(stat.st_size / (1024 * 1024), 2)
+                            })
+                except (PermissionError, OSError):
+                    continue
+    except (PermissionError, OSError) as e:
+        return jsonify({
+            "status": "ERROR",
+            "message": f"Acceso restringido: {e}",
+            "current_path": os.path.normpath(req_path).replace("\\", "/"),
+            "code": 403
+        })
+
+    folders.sort(key=lambda x: x["name"].lower())
+    files.sort(key=lambda x: (not x["compatible"], x["name"].lower()))
+
+    return jsonify({
+        "status": "SUCCESS",
+        "current_path": os.path.normpath(req_path).replace("\\", "/"),
+        "parent_path": os.path.normpath(parent_path).replace("\\", "/") if parent_path else None,
+        "drives": drives,
+        "quick_paths": quick_paths,
+        "folders": folders,
+        "files": files,
+        "code": 200
+    })
+
+
+@app.route('/api/fs/browse_native', methods=['POST'])
+def browse_native():
+    """
+    Abre el explorador de archivos nativo de Windows (OpenFileDialog) 
+    para que el usuario seleccione cualquier modelo directamente en su equipo.
+    """
+    data = request.get_json(silent=True) or {}
+    tipo = data.get('tipo', 'armas').lower()
+    initial_dir = data.get('initial_dir', '')
+    
+    if not initial_dir or not os.path.exists(initial_dir):
+        with estado.lock:
+            if tipo == 'armas':
+                cur = estado.config_ram.get("cfg_modelo_armas", config.WEAPON_DEFAULT_MODEL)
+            else:
+                cur = estado.config_ram.get("cfg_modelo_comportamiento", config.BEHAVIOR_DEFAULT_MODEL)
+        resolved = config.resolver_ruta_modelo(cur, tipo)
+        if os.path.exists(resolved):
+            initial_dir = os.path.dirname(resolved) if os.path.isfile(resolved) else resolved
+        else:
+            initial_dir = config.MODELS_DIR
+            
+    initial_dir = os.path.normpath(initial_dir)
+    resultado = {"path": None}
+    
+    def _abrir_dialogo_os():
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.wm_attributes('-topmost', 1)
+            root.focus_force()
+            
+            if tipo == 'armas':
+                filetypes = [
+                    ("Modelos de Objetos / Armas (*.pt, *.engine, *.onnx)", "*.pt;*.engine;*.onnx"),
+                    ("PyTorch YOLO (*.pt)", "*.pt"),
+                    ("TensorRT Engine (*.engine)", "*.engine"),
+                    ("ONNX Model (*.onnx)", "*.onnx"),
+                    ("Todos los archivos (*.*)", "*.*")
+                ]
+                titulo = "Seleccionar Modelo de Objetos / Armas"
+            else:
+                filetypes = [
+                    ("Modelos de Comportamiento (*.pth)", "*.pth"),
+                    ("PyTorch Checkpoint (*.pth)", "*.pth"),
+                    ("Todos los archivos (*.*)", "*.*")
+                ]
+                titulo = "Seleccionar Modelo de Comportamiento"
+                
+            seleccionado = filedialog.askopenfilename(
+                title=titulo, 
+                initialdir=initial_dir, 
+                filetypes=filetypes
+            )
+            root.destroy()
+            if seleccionado:
+                resultado["path"] = os.path.normpath(seleccionado).replace("\\", "/")
+        except Exception as err:
+            print(f"[ERROR] Error al abrir diálogo de Windows: {err}")
+
+    hilo_dialogo = threading.Thread(target=_abrir_dialogo_os)
+    hilo_dialogo.start()
+    hilo_dialogo.join(timeout=180)
+    
+    if resultado["path"]:
+        return jsonify({"status": "SUCCESS", "path": resultado["path"], "code": 200})
+    return jsonify({"status": "CANCELLED", "path": None, "code": 200})
 
 
 # ==========================================

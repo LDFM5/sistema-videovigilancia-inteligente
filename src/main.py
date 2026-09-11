@@ -8,6 +8,7 @@ Motor principal de inferencia de DAOCS.
 - Captura explícita de excepciones en hilos de alertas.
 """
 
+import os
 import cv2
 import numpy as np
 import time
@@ -26,7 +27,7 @@ from detection import batch_detect_weapons
 from temporal_logic import initialize_windows, update_window
 from recorder import initialize_recording_state, handle_recording, inicializar_camara_grabacion
 from streamer import RTSPStreamer
-from visualization import draw_performance_overlay
+from visualization import draw_performance_overlay, dibujar_osd_cuadricula, dibujar_osd_proporcional
 from behavior_cnn import cargar_modelo_violencia, evaluar_secuencias_violencia_batch
 
 _registro_estados_global = {}
@@ -63,29 +64,31 @@ def ejecutar_sistema_principal(shared_state):
 
     estado_previo_armas = None
     estado_previo_comportamiento = None
+    modelo_previo_armas = None
+    modelo_previo_comportamiento = None
     cola_carga_armas = queue.Queue()
     cola_carga_comportamiento = queue.Queue()
     generacion_armas = 0
     generacion_comportamiento = 0
 
-    def cargar_armas_en_segundo_plano(generacion):
+    def cargar_armas_en_segundo_plano(generacion, ruta_modelo):
         try:
-            modelo = YOLO(config.WEAPON_MODEL_PATH)
-            cola_carga_armas.put((generacion, modelo, None))
+            modelo = YOLO(ruta_modelo)
+            cola_carga_armas.put((generacion, modelo, None, os.path.basename(ruta_modelo)))
         except Exception as error:
-            cola_carga_armas.put((generacion, None, error))
+            cola_carga_armas.put((generacion, None, error, os.path.basename(ruta_modelo)))
 
-    def cargar_comportamiento_en_segundo_plano(generacion):
+    def cargar_comportamiento_en_segundo_plano(generacion, ruta_modelo):
         try:
             modelo = cargar_modelo_violencia(
-                config.BEHAVIOR_MODEL_PATH, dispositivo_ia
+                ruta_modelo, dispositivo_ia
             )
             error = None if modelo is not None else RuntimeError(
                 "EL MODELO DE COMPORTAMIENTO NO PUDO CARGARSE"
             )
-            cola_carga_comportamiento.put((generacion, modelo, error))
+            cola_carga_comportamiento.put((generacion, modelo, error, os.path.basename(ruta_modelo)))
         except Exception as error:
-            cola_carga_comportamiento.put((generacion, None, error))
+            cola_carga_comportamiento.put((generacion, None, error, os.path.basename(ruta_modelo)))
 
     # ======================================================
     # 2. DISPOSITIVOS Y BÚFERES POR CANAL (CLAVES NORMALIZADAS)
@@ -101,6 +104,7 @@ def ejecutar_sistema_principal(shared_state):
 
     historial_secuencias = {cam_name.upper(): deque() for cam_name in cameras}
     historial_predicciones = {cam_name.upper(): deque(maxlen=8) for cam_name in cameras}
+    ultimo_score_comportamiento = {cam_name.upper(): 0.0 for cam_name in cameras}
     ultimo_frame_procesado = {cam_name.upper(): None for cam_name in cameras}
     cola_inferencia_comportamiento = queue.Queue(maxsize=max(8, len(cameras) * 2))
     cola_resultados_comportamiento = queue.Queue()
@@ -246,6 +250,7 @@ def ejecutar_sistema_principal(shared_state):
                         
                         historial_secuencias[c_upper] = deque()
                         historial_predicciones[c_upper] = deque(maxlen=8)
+                        ultimo_score_comportamiento[c_upper] = 0.0
                         ultimo_frame_procesado[c_upper] = None
                         inferencia_comportamiento_en_vuelo[c_upper] = False
                         ultimo_error_inferencia_comportamiento[c_upper] = 0.0
@@ -284,6 +289,7 @@ def ejecutar_sistema_principal(shared_state):
                     camera_fps.pop(c_upper, None)
                     historial_secuencias.pop(c_upper, None)
                     historial_predicciones.pop(c_upper, None)
+                    ultimo_score_comportamiento.pop(c_upper, None)
                     ultimo_frame_procesado.pop(c_upper, None)
                     inferencia_comportamiento_en_vuelo.pop(c_upper, None)
                     ultimo_error_inferencia_comportamiento.pop(c_upper, None)
@@ -347,46 +353,62 @@ def ejecutar_sistema_principal(shared_state):
         tiempo_actual = time.monotonic()
         dt_ciclo = tiempo_actual - tiempo_anterior
         tiempo_anterior = tiempo_actual
+        dt_ciclo = tiempo_actual - tiempo_anterior
+        tiempo_anterior = tiempo_actual
         
         if dt_ciclo > 0:
             fps_inst = 1.0 / dt_ciclo
             fps_mostrar = (0.9 * fps_mostrar) + (0.1 * fps_inst)
 
         # ======================================================
-        # GESTIÓN CONTROLADA DE MODELOS
+        # GESTIÓN CONTROLADA DE MODELOS (HOT-SWAP DINÁMICO)
         # ======================================================
-        cfg_armas_actual = shared_state.config_ram.get("cfg_armas", True)
-        if cfg_armas_actual != estado_previo_armas:
+        cfg_armas_actual = shared_state.config_ram.get("cfg_armas", False)
+        modelo_armas_actual = shared_state.config_ram.get("cfg_modelo_armas", config.WEAPON_DEFAULT_MODEL)
+
+        cambio_armas = (cfg_armas_actual != estado_previo_armas) or (cfg_armas_actual and modelo_armas_actual != modelo_previo_armas)
+        if cambio_armas:
             estado_previo_armas = cfg_armas_actual
+            modelo_previo_armas = modelo_armas_actual
             generacion_armas += 1
             if cfg_armas_actual:
+                ruta_armas = config.resolver_ruta_modelo(modelo_armas_actual, "armas")
                 threading.Thread(
                     target=cargar_armas_en_segundo_plano,
-                    args=(generacion_armas,),
+                    args=(generacion_armas, ruta_armas),
                     daemon=True,
                     name="ModelLoader-Weapons",
                 ).start()
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "info", "message": "Cargando el modelo de detección de armas."
+                    "type": "info", "message": f"Cargando modelo de armas: {os.path.basename(ruta_armas)}..."
                 })
             else:
                 weapon_model = None
+                for win in windows_armas.values():
+                    win["events"].clear()
+                for cam_u in alert_state_armas:
+                    alert_state_armas[cam_u] = False
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
         cfg_comp_actual = shared_state.config_ram.get("cfg_comportamiento", False)
-        if cfg_comp_actual != estado_previo_comportamiento:
+        modelo_comp_actual = shared_state.config_ram.get("cfg_modelo_comportamiento", config.BEHAVIOR_DEFAULT_MODEL)
+
+        cambio_comp = (cfg_comp_actual != estado_previo_comportamiento) or (cfg_comp_actual and modelo_comp_actual != modelo_previo_comportamiento)
+        if cambio_comp:
             estado_previo_comportamiento = cfg_comp_actual
+            modelo_previo_comportamiento = modelo_comp_actual
             generacion_comportamiento += 1
             if cfg_comp_actual:
+                ruta_comp = config.resolver_ruta_modelo(modelo_comp_actual, "comportamiento")
                 threading.Thread(
                     target=cargar_comportamiento_en_segundo_plano,
-                    args=(generacion_comportamiento,),
+                    args=(generacion_comportamiento, ruta_comp),
                     daemon=True,
                     name="ModelLoader-Behavior",
                 ).start()
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "info", "message": "Cargando el modelo de análisis de comportamiento."
+                    "type": "info", "message": f"Cargando modelo de comportamiento: {os.path.basename(ruta_comp)}..."
                 })
             else:
                 behavior_model = None
@@ -397,12 +419,16 @@ def ejecutar_sistema_principal(shared_state):
                 resultados_comportamiento_pendientes.clear()
                 for cam_upper in inferencia_comportamiento_en_vuelo:
                     inferencia_comportamiento_en_vuelo[cam_upper] = False
+                for cam_upper in ultimo_score_comportamiento:
+                    ultimo_score_comportamiento[cam_upper] = 0.0
+                for cam_upper in ultimo_tiempo_alerta_violencia:
+                    ultimo_tiempo_alerta_violencia[cam_upper] = 0.0
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
         while True:
             try:
-                generacion, modelo_cargado, error = cola_carga_armas.get_nowait()
+                generacion, modelo_cargado, error, nombre_arch = cola_carga_armas.get_nowait()
             except queue.Empty:
                 break
             if generacion != generacion_armas or not cfg_armas_actual:
@@ -410,17 +436,17 @@ def ejecutar_sistema_principal(shared_state):
             if error is None:
                 weapon_model = modelo_cargado
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "success", "message": "Modelo de detección de armas disponible."
+                    "type": "success", "message": f"Modelo de detección de armas '{nombre_arch}' activado."
                 })
             else:
                 weapon_model = None
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "error", "message": f"No se pudo cargar el modelo de detección de armas: {error}"
+                    "type": "error", "message": f"No se pudo cargar el modelo de armas '{nombre_arch}': {error}"
                 })
 
         while True:
             try:
-                generacion, modelo_cargado, error = cola_carga_comportamiento.get_nowait()
+                generacion, modelo_cargado, error, nombre_arch = cola_carga_comportamiento.get_nowait()
             except queue.Empty:
                 break
             if generacion != generacion_comportamiento or not cfg_comp_actual:
@@ -428,12 +454,12 @@ def ejecutar_sistema_principal(shared_state):
             if error is None:
                 behavior_model = modelo_cargado
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "success", "message": "Modelo de análisis de comportamiento disponible."
+                    "type": "success", "message": f"Modelo de comportamiento '{nombre_arch}' activado."
                 })
             else:
                 behavior_model = None
                 shared_state.emitir_evento_dashboard('system_log', {
-                    "type": "error", "message": f"No se pudo cargar el modelo de comportamiento: {error}"
+                    "type": "error", "message": f"No se pudo cargar el modelo de comportamiento '{nombre_arch}': {error}"
                 })
 
         while True:
@@ -472,7 +498,7 @@ def ejecutar_sistema_principal(shared_state):
         weapon_results = [None] * len(frames_list)
         alertas_armas_batch = [False] * len(frames_list)
 
-        if weapon_model is not None and frames_list:
+        if cfg_armas_actual and weapon_model is not None and frames_list:
             raw_w_results, raw_alertas = batch_detect_weapons(
                 weapon_model, frames_list, 
                 conf=shared_state.config_ram.get("cfg_confianza_armas", 0.50), 
@@ -494,11 +520,11 @@ def ejecutar_sistema_principal(shared_state):
             comportamiento_anomalo = False
             nombre_comportamiento = ""
 
-            if weapon_model is not None:
+            if cfg_armas_actual and weapon_model is not None:
                 weapon_in_frame = alertas_armas_batch[i]
 
             # EVALUACIÓN DE VIOLENCIA TEMPORAL (TSM)
-            if behavior_model is not None:
+            if cfg_comp_actual and behavior_model is not None:
                 umbral_actual = shared_state.config_ram.get("cfg_confianza_comportamiento", 0.50)
 
                 resultado_nuevo = resultados_comportamiento_pendientes.pop(
@@ -513,6 +539,14 @@ def ejecutar_sistema_principal(shared_state):
                         historial_predicciones[cam_upper].append(
                             es_violencia_frame
                         )
+                        ultimo_score_comportamiento[cam_upper] = float(score)
+
+                        # Actualizar la alerta únicamente ante una nueva confirmación positiva real
+                        alertas_activas = sum(historial_predicciones[cam_upper])
+                        total_evaluaciones = len(historial_predicciones[cam_upper])
+                        if es_violencia_frame == 1 and total_evaluaciones >= 2 and alertas_activas >= 2 and (alertas_activas / total_evaluaciones) >= 0.30:
+                            ultimo_tiempo_alerta_violencia[cam_upper] = tiempo_actual
+
                     elif (
                         tiempo_actual
                         - ultimo_error_inferencia_comportamiento.get(cam_upper, 0.0)
@@ -541,13 +575,6 @@ def ejecutar_sistema_principal(shared_state):
                         ultimo_tiempo_inferencia[cam_upper] = tiempo_actual
                     except queue.Full:
                         pass
-                
-                alertas_activas = sum(historial_predicciones[cam_upper])
-                total_evaluaciones = len(historial_predicciones[cam_upper])
-
-                # Requiere confirmación temporal: al menos 2 detecciones positivas consecutivas/cercanas
-                if total_evaluaciones >= 2 and alertas_activas >= 2 and (alertas_activas / total_evaluaciones) >= 0.30:
-                    ultimo_tiempo_alerta_violencia[cam_upper] = tiempo_actual
 
                 if (tiempo_actual - ultimo_tiempo_alerta_violencia.get(cam_upper, 0.0)) < TIEMPO_RETENCION_ALERTA_SEG:
                     comportamiento_anomalo = True
@@ -558,42 +585,28 @@ def ejecutar_sistema_principal(shared_state):
                 cam_upper, weapon_in_frame, windows_armas, 
                 config.ACTIVATION_THRESHOLD, alert_state_armas,
                 timestamp=frame_timestamp,
-            )
+            ) if (cfg_armas_actual and weapon_model is not None) else False
 
-            alert_triggered = (alerta_arma if weapon_model is not None else False) or comportamiento_anomalo
-            amenaza_presente = (weapon_in_frame if weapon_model is not None else False) or comportamiento_anomalo
+            alert_triggered = (alerta_arma if (cfg_armas_actual and weapon_model is not None) else False) or (comportamiento_anomalo if cfg_comp_actual else False)
+            amenaza_presente = (weapon_in_frame if (cfg_armas_actual and weapon_model is not None) else False) or (comportamiento_anomalo if cfg_comp_actual else False)
 
             # OVERLAYS HUD
-            h_img, w_img = frame.shape[:2]
-
-            if weapon_model is not None and w_res and len(w_res.boxes) > 0:
+            if cfg_armas_actual and weapon_model is not None and w_res and len(w_res.boxes) > 0:
                 frame = w_res.plot(img=frame)
 
-            if comportamiento_anomalo:
-                cv2.rectangle(frame, (15, 12), (480, 44), (15, 15, 20), -1)
-                cv2.rectangle(frame, (15, 12), (480, 44), (50, 50, 240), 2)
-                cv2.circle(frame, (32, 28), 6, (0, 0, 255), -1)
-                cv2.putText(
-                    frame, "ALERTA: CONDUCTA HOSTIL DETECTADA", (48, 32), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA
-                )
+            score_comp_actual = ultimo_score_comportamiento.get(cam_upper, 0.0) if cfg_comp_actual else 0.0
 
-            cadena_tiempo_actual = time.strftime("%d/%m/%Y  ──  %H:%M:%S")
-            texto_metadatos = f"CAM: {cam_upper}  |  {cadena_tiempo_actual}"
-            cv2.rectangle(frame, (10, h_img - 35), (450, h_img - 8), (10, 11, 13), -1)
-            cv2.putText(
-                frame, texto_metadatos, (20, h_img - 15), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (227, 230, 235), 1, cv2.LINE_AA
-            )
-
-            if shared_state.config_ram.get("cfg_debug", False):
-                frame = draw_performance_overlay(frame, fps_mostrar)
-
-            # PERSISTENCIA
+            # PERSISTENCIA (Grabación de evidencia con OSD proporcional al fotograma nativo)
             estaba_grabando = recording_state[cam_upper]["recording"]
 
+            frame_grabacion = dibujar_osd_proporcional(
+                frame.copy(), cam_upper, 
+                alerta_comportamiento=(comportamiento_anomalo if cfg_comp_actual else False), 
+                score_comp=score_comp_actual
+            )
+
             handle_recording(
-                cam_upper, frame, camera_resolutions, recording_state,
+                cam_upper, frame_grabacion, camera_resolutions, recording_state,
                 shared_state.config_ram.get("cfg_postbuffer", 15), 
                 alert_triggered, amenaza_presente, shared_state=shared_state,
                 pre_buffer_seconds=shared_state.config_ram.get("cfg_prebuffer", 10),
@@ -617,7 +630,7 @@ def ejecutar_sistema_principal(shared_state):
             # EVALUACIÓN CONTINUA Y DESPACHO DE ALERTAS
             if esta_grabando_actualmente:
                 # Alerta por Confirmación de Arma de Fuego
-                if alerta_arma and "ARMA" not in alertas_enviadas_evento[cam_upper]:
+                if cfg_armas_actual and alerta_arma and "ARMA" not in alertas_enviadas_evento[cam_upper]:
                     print(f"\n[ALERTA] Presencia de arma confirmada en {cam_upper}.")
                     shared_state.emitir_evento_dashboard('system_log', {
                         "type": "error",
@@ -631,7 +644,7 @@ def ejecutar_sistema_principal(shared_state):
                     alertas_enviadas_evento[cam_upper].add("ARMA")
 
                 # Alerta por Comportamiento Hostil
-                if comportamiento_anomalo and nombre_comportamiento not in alertas_enviadas_evento[cam_upper]:
+                if cfg_comp_actual and comportamiento_anomalo and nombre_comportamiento not in alertas_enviadas_evento[cam_upper]:
                     print(f"\n[ALERTA] Conducta hostil confirmada en {cam_upper}.")
                     shared_state.emitir_evento_dashboard('system_log', {
                         "type": "error",
@@ -647,9 +660,23 @@ def ejecutar_sistema_principal(shared_state):
                 # Si la cámara ya no está grabando, limpiar registro de eventos enviados
                 alertas_enviadas_evento[cam_upper].clear()
 
-            # TRANSMISIÓN RTSP
+            # TRANSMISIÓN RTSP (Estandarizado a la cuadrícula: 800 x target_h con OSD nítido)
             if cam_upper in streamers:
-                streamers[cam_upper].enviar_frame(frame)
+                target_w = streamers[cam_upper].width
+                target_h = streamers[cam_upper].height
+                frame_stream = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                
+                # Dibujar OSD nítido con dimensiones uniformes sobre la resolución de salida
+                frame_stream = dibujar_osd_cuadricula(
+                    frame_stream, cam_upper, 
+                    alerta_comportamiento=(comportamiento_anomalo if cfg_comp_actual else False), 
+                    score_comp=score_comp_actual
+                )
+                
+                if shared_state.config_ram.get("cfg_debug", False):
+                    frame_stream = draw_performance_overlay(frame_stream, fps_mostrar)
+                    
+                streamers[cam_upper].enviar_frame(frame_stream)
             
             # ESTADO GLOBAL
             cam_key_lower = cam_upper.lower()

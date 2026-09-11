@@ -168,12 +168,20 @@ evidences/
 
 # Modelos entrenados (pesados)
 models/*.pt
+models/*.pth
+models/*.engine
+models/*.onnx
+*.pt
+*.pth
+*.engine
+*.onnx
 
 # Dataset local
 Training datasets/
 datasets/
+Weapon-Detection-Test-*/
 
-# Archivos grandes de entrenamiento
+# Archivos grandes de video y multimedia
 *.mp4
 *.avi
 *.mov
@@ -184,6 +192,9 @@ datasets/
 # Archivos de Drive descargados
 drive/
 
-# Tokens o claves sensibles
+# Tokens, claves sensibles y configuración local de usuario
 config_local.py
+config_usuario.json
 secrets.py
+.env
+.env.*
